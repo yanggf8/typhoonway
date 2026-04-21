@@ -1,6 +1,105 @@
 # Typhoon Way - Technical Design Document
 
-> Version 1.0 | 2026-04-22
+> Version 1.1 | 2026-04-22 | Status: Draft
+
+---
+
+## 0. Design Brief
+
+### 0.1 Summary
+
+Typhoon Way is a Rust + TursoDB self-growing agent runtime. It captures session signals, consolidates memories through dream phases, proposes skills and soul/config changes, and requires human approval before growth affects behavior. Native builds use libSQL directly; WASM builds use host-provided DB imports, including atomic `db-batch`.
+
+### 0.2 Context / Problem
+
+Current agents lose useful workflow patterns between sessions and require users to repeat the same corrections and operational steps. Typhoon provides persistent memory, pattern detection, and approval-gated skill growth without executable generated code or YAML/JSON config files.
+
+### 0.3 Goals
+
+- Offline-first CLI with local `~/.typhoon/agent.db`.
+- SQL-backed config, memory, signals, skills, proposals, and analytics.
+- Dream cycle with light / REM / deep phases.
+- Human-approved skill and soul proposals.
+- Agent-first skill execution: plain text instructions, no direct auto-execution.
+- WASM-compatible core with explicit host DB operations.
+- Safe debug SQL: SELECT-only.
+
+### 0.4 Non-Goals
+
+- No autonomous execution of newly generated skills.
+- No YAML/JSON config files.
+- No Python/Node runtime dependency.
+- No multi-user auth system in v1.
+- No vector search in the initial implementation.
+- No full cloud control plane in v1.
+
+### 0.5 Stakeholders / Owners
+
+| Role | Owner |
+|------|-------|
+| DRI | TBD |
+| Reviewers | TBD |
+| Impacted users | Local agent operators and agent developers |
+| Related docs | `PROPOSAL.md`, `PLAN.md`, `CLAUDE.md` |
+
+### 0.6 Requirements
+
+#### Functional
+
+- Initialize local DB offline.
+- Capture dream signals and session analytics.
+- Run dream cycle manually, by cron, and by catchup.
+- Promote high-scoring memories.
+- Create pending skill proposals from recurring workflows.
+- Approve, reject, edit, and expire skill proposals.
+- Create, approve, and reject soul proposals.
+- Match only approved skills.
+- Export WASM interface with host DB operations.
+
+#### Non-Functional
+
+- DB stays under 10MB for 30-day expected usage.
+- No missed dream after laptop sleep when `dream --catchup` runs.
+- All approval mutations are atomic.
+- WASM hosts must implement `db-batch` atomically or reject the batch.
+- Config score values must stay within `0.0..=1.0`.
+- Debug SQL must reject non-SELECT statements.
+
+### 0.7 Alternatives Considered
+
+| Option | Decision | Reason |
+|--------|----------|--------|
+| Auto-create skills | Rejected | User approval is required before growth changes behavior |
+| Executable generated skills | Rejected | Natural-language instructions are safer and agent-mediated |
+| JSON/YAML skill procedures | Rejected | Adds parsing/schema overhead without improving agent execution |
+| Direct DB access inside WASM | Rejected | Host capabilities must be explicit and portable |
+| SQLite-only local files | Rejected | Cloud sync and edge replication are required |
+
+### 0.8 Tradeoffs / Risks
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| WASM host does not support atomic DB batch | Partial approval writes | Require `db-batch` or fail closed |
+| CSV fields become hard to query | Analytics limitations | Accept for v1, revisit normalized tables later |
+| Proposal quality is noisy | Bad skill suggestions | Human approval, rejection tracking, thresholds |
+| Local DB grows too large | Slower dream runs | Prune stale signals, monitor DB size |
+| Cron missed during sleep | Missed consolidation | `dream --catchup` if last run >25h |
+
+### 0.9 Rollout Plan
+
+1. Phase 1: CLI, DB init, config, migrations.
+2. Phase 2: memory and signal capture.
+3. Phase 3: dream cycle and pruning.
+4. Phase 4: skill proposals and approval.
+5. Phase 5: soul proposals and rejection tracking.
+6. Phase 6: WASM interface and host adapters.
+
+### 0.10 Open Questions
+
+- Should CSV fields be normalized before v1 or deferred?
+- Should `typhoon link` store tokens encrypted, via env vars, or both?
+- What exact telemetry should `dream_runs.report` contain?
+- What is the first supported WASM host: wasmtime, Cloudflare, or browser?
 
 ---
 
