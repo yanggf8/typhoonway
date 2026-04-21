@@ -390,12 +390,18 @@ Goal: Compile to `typhoon.wasm`, run on wasmtime and edge runtimes.
 ```wit
 package typhoon:core@0.1.0;
 
+record db-statement {
+  sql: string,
+  params: list<string>,
+}
+
 world typhoon {
   // Host provides
   import log: func(msg: string);
   import time-now: func() -> s64;
   import db-exec: func(sql: string, params: list<string>) -> result;
   import db-query: func(sql: string, params: list<string>) -> result<list<list<string>>>;
+  import db-batch: func(statements: list<db-statement>) -> result;
 
   // Module exports
   export dream-tick: func() -> result;
@@ -413,7 +419,7 @@ DB access per target:
 | Cloudflare Workers | Host Turso HTTP adapter | Cloud-only, no local file |
 | Browser | Host browser/Turso adapter | Cloud-only or browser-compatible storage |
 
-Native builds call the `libsql` crate directly. WASM builds call `db-exec` and `db-query`; each host decides how those imports are backed.
+Native builds call the `libsql` crate directly. WASM builds call `db-exec`, `db-query`, and atomic `db-batch`; each host decides how those imports are backed.
 
 ### 6.2 WASM compile
 
@@ -426,7 +432,7 @@ Native builds call the `libsql` crate directly. WASM builds call `db-exec` and `
 ### 6.3 Host bindings
 
 `src/host_wasmtime.rs`:
-- wasmtime host that provides `log`, `time-now`, `db-exec`, and `db-query` imports
+- wasmtime host that provides `log`, `time-now`, `db-exec`, `db-query`, and `db-batch` imports
 - DB: host opens libSQL and exposes query/exec operations to the module
 - Calls exported `dream-tick`, `memory-search`, `skill-match`, `pending-proposals`
 
@@ -464,12 +470,12 @@ Phase 1 (Foundation)
 - [ ] `typhoon config set` rejects invalid values (type mismatch, out of range)
 - [ ] `typhoon sql` only allows SELECT statements
 - [ ] `typhoon dream --catchup` runs if >25h since last run
-- [ ] Dream phases wrapped in transactions for consistency
+- [ ] Deep-phase mutations wrapped in transactions for consistency
 - [ ] Stale signals (>7 days) pruned even if not promoted
 - [ ] High-value patterns (frequency >= 5, value_score >= 0.7) surface as proposals
 - [ ] `typhoon propose approve` creates skill from proposal atomically
 - [ ] `typhoon propose reject` marks proposal rejected
-- [ ] Proposal approval is idempotent (retry is no-op)
+- [ ] Proposal approval is idempotent (retry returns existing created skill)
 - [ ] Skills are plain text instructions, not executable code
 - [ ] Skill trigger matching: longest match wins, then most used
 - [ ] Only approved skills match (draft/disabled ignored)
@@ -481,4 +487,5 @@ Phase 1 (Foundation)
 - [ ] Concurrent dream runs prevented by file lock
 - [ ] `typhoon link` syncs to Turso cloud
 - [ ] `typhoon.wasm` < 3MB, `wasmtime run typhoon.wasm dream-tick` works
+- [ ] WASM host implements `db-batch` atomically or rejects the batch
 - [ ] Agent runs 30 days, laptop sleeps 8h/night, no missed dreams, DB < 10MB

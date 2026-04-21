@@ -151,7 +151,7 @@ The agent reads, interprets, decides tools, executes with its own safety. User s
 | Cloudflare Workers | Host Turso HTTP adapter | Cloud-only, no local file |
 | Browser | Host browser/Turso adapter | Cloud-only or browser-compatible storage |
 
-WIT interface imports `db-exec(sql, params)` and `db-query(sql, params)` so each host owns its storage and network permissions.
+WIT interface imports `db-exec(sql, params)`, `db-query(sql, params)`, and atomic `db-batch(statements)` so each host owns its storage, transaction, and network permissions.
 
 ## Atomicity Requirements
 

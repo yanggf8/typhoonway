@@ -369,12 +369,18 @@ The WIT interface is **stateless**. Native builds use the `libsql` crate directl
 ```wit
 package typhoon:core@0.1.0;
 
+record db-statement {
+  sql: string,
+  params: list<string>,
+}
+
 world typhoon {
   // Host provides
   import log: func(msg: string);
   import time-now: func() -> s64;
   import db-exec: func(sql: string, params: list<string>) -> result;
   import db-query: func(sql: string, params: list<string>) -> result<list<list<string>>>;
+  import db-batch: func(statements: list<db-statement>) -> result;
 
   // Module exports
   export dream-tick: func() -> result;
@@ -384,14 +390,14 @@ world typhoon {
 }
 ```
 
-WASM hosts decide how `db-exec` and `db-query` are implemented: local libSQL for wasmtime, Turso HTTP for Cloudflare Workers, or a browser-compatible storage adapter.
+WASM hosts decide how `db-exec`, `db-query`, and atomic `db-batch` are implemented: local libSQL for wasmtime, Turso HTTP for Cloudflare Workers, or a browser-compatible storage adapter. Hosts that cannot provide rollback semantics for `db-batch` must return an error instead of partially applying a batch.
 
 ### Binary Variants
 
 ```
 typhoon-core (Rust)
   ├── native: libsql crate direct
-  ├── wasm: host-provided db-exec/db-query imports
+  ├── wasm: host-provided db-exec/db-query/db-batch imports
   ├── dream-cortex: SQL does scoring, Rust does orchestration
   ├── memory-weaver: writes to libsql, syncs on cron
   └── skill-grow: discovers patterns, creates proposals
