@@ -1,5 +1,11 @@
 # Typhoon Way - Technical Design Document
 
+> ⚠️ **OUTDATED — DO NOT USE**
+>
+> This document does not reflect the product being built. It was written against an earlier shape of the proposal that included Cloudflare Workers, browser targets, `db-batch`, and other scope that has since been rejected.
+>
+> Canonical source of truth: **PROPOSAL.md**. A new technical design will be written once the proposal settles.
+
 > Version 1.1 | 2026-04-22 | Status: Draft
 
 ---
@@ -73,7 +79,9 @@ Current agents lose useful workflow patterns between sessions and require users 
 | Executable generated skills | Rejected | Natural-language instructions are safer and agent-mediated |
 | JSON/YAML skill procedures | Rejected | Adds parsing/schema overhead without improving agent execution |
 | Direct DB access inside WASM | Rejected | Host capabilities must be explicit and portable |
-| SQLite-only local files | Rejected | Cloud sync and edge replication are required |
+| SQLite-only local files | Rejected | Optional multi-device cloud sync is required |
+| Cloudflare Workers target | Rejected | CLI product; no need for edge hosting, forces HTTP-only DB path |
+| Browser target | Rejected | Cannot host a CLI; storage/execution model doesn't match |
 
 ### 0.8 Tradeoffs / Risks
 
@@ -99,7 +107,7 @@ Current agents lose useful workflow patterns between sessions and require users 
 - Should CSV fields be normalized before v1 or deferred?
 - Should `typhoon link` store tokens encrypted, via env vars, or both?
 - What exact telemetry should `dream_runs.report` contain?
-- What is the first supported WASM host: wasmtime, Cloudflare, or browser?
+- Is wasmtime kept as a distribution target alongside the native CLI, or is native-only sufficient for v1?
 
 ---
 

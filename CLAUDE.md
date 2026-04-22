@@ -4,169 +4,84 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project: Typhoon Way
 
-A self-growing agent system in Rust with TursoDB. Compiles to WASM. Runs anywhere — CLI, browser, Cloudflare Workers, edge. All state lives in one TursoDB instance (local libsql or cloud replica).
+A self-growing agent runtime in Rust with TursoDB/libSQL. Primary target is the native CLI binary; `wasm32-wasip2` + wasmtime is a secondary target for a portable artifact. Cloudflare Workers and browser were considered and rejected (see PROPOSAL §No-Go). All state (config, memory, signals, skills, proposals, analytics) lives in one SQL database — no YAML, no JSON config files, no Python.
 
-**Agent-first**: Every CLI command is designed for agent consumption. Skills are plain text instructions that agents interpret, not scripts that execute directly.
+**Agent-first**: every CLI command is shaped for agent consumption. Skills are plain-text procedures an agent interprets, not scripts the runtime executes.
 
-**Self-growing with human approval**: The system discovers high-value patterns from usage, proposes them as skills, and the user approves. Nothing auto-executes.
+**Self-growing with human approval**: the dream cycle mines signals for high-value patterns and writes them to `skill_proposals` / `soul_proposals`. Nothing takes effect until the user approves.
 
-## Tech Stack
+## Current State
 
-- **Language**: Rust 2021
-- **Database**: TursoDB / libSQL (edge replication, embedded, SQL)
-- **Async**: tokio
-- **CLI**: clap (derive)
-- **WASM**: wasip2 + wit-bindgen
-- **Config**: SQL table (zero files, self-modify, transactional)
+**Pre-bootstrap / spec-stage.** The repo contains design docs only — no `Cargo.toml`, no `src/`, no compiled artifacts yet. The proposal itself is still being refined; scaffolding decisions and a new plan come after it settles.
 
-## Build Commands
+Canonical doc:
 
-```bash
-cargo build                    # Development build
-cargo build --release          # Release build (optimized)
-cargo test                     # Run all tests
-cargo test <name>              # Run specific test
-cargo run -- init              # Initialize DB at ~/.typhoon/agent.db
-cargo run -- config get <key>  # Get config value
-cargo run -- config set <k> <v> # Set config value
-cargo run -- run               # Start REPL
-cargo run -- dream             # Manual dream cycle
-cargo run -- dream --catchup   # Run if >25h since last dream
-cargo run -- skill list        # List approved skills
-cargo run -- skill create <n>  # Create skill manually
-cargo run -- propose list      # List pending skill proposals
-cargo run -- propose approve <id>  # Approve proposal → create skill
-cargo run -- soul list         # List pending soul proposals
-cargo run -- soul approve <id> # Approve soul change
-cargo run -- sql "<query>"     # Raw SQL debug (SELECT only)
-```
+- `PROPOSAL.md` — vision, tech-stack rationale, schema, self-growth loop, no-go list. **Single source of truth.**
 
-### WASM Build
+**`OUTDATEDPLAN.md` and `OUTDATEDDESIGN.md`** (formerly `PLAN.md` / `DESIGN.md`) are kept for historical reference only. They describe an earlier scope (Cloudflare Workers, browser, `db-batch`) that has been rejected. Do not treat them as current; do not copy their patterns. A new plan and design will be written once the proposal settles.
 
-```bash
-cargo build --target wasm32-wasip2 --release
-# Output: target/wasm32-wasip2/release/typhoon.wasm (~3MB)
-wasmtime run typhoon.wasm dream-tick
-```
+## Planned CLI Surface
 
-## Architecture
+Once the crate is scaffolded, the following commands are the intended public interface (see `PROPOSAL.md` §"CLI Commands" for the full list):
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ typhoon (Rust)                                      │
-│ ┌─────────────┐ ┌──────────────┐ ┌────────────┐    │
-│ │ dream-cortex│ │ memory-weaver│ │ skill-grow │    │
-│ │ (cron)      │ │ (recall)     │ │ (propose)  │    │
-│ └──────┬──────┘ └──────┬───────┘ └─────┬──────┘    │
-│        └───────────────┼───────────────┘           │
-│                        ▼                           │
-│               ┌─────────────────┐                   │
-│               │    TursoDB      │                   │
-│               └─────────────────┘                   │
-└─────────────────────────────────────────────────────┘
+typhoon init                        # Create ~/.typhoon/agent.db + seed (offline)
+typhoon link --url URL --token TOK  # Add Turso cloud replica
+typhoon run                         # Interactive REPL
+typhoon dream [--catchup]           # Manual dream cycle; --catchup runs if >25h since last
+typhoon cron                        # Scheduler daemon
+typhoon skill {list|show|create|edit|disable|delete} ...
+typhoon propose {list|show|approve|edit|reject|expire} ...
+typhoon soul {list|show|approve|reject} ...
+typhoon config {get|set|list|validate} ...
+typhoon sql "<SELECT ...>"          # Debug, SELECT-only
 ```
 
-### Code Layout
+WASM build target (optional, Phase 6): `cargo build --target wasm32-wasip2 --release`, output `target/wasm32-wasip2/release/typhoon.wasm` (size budget <3MB). Runs under wasmtime with a host that supplies `log`, `time-now`, `db-exec`, `db-query`, `db-batch` backed by a local libSQL connection.
+
+## Architecture (high-level)
 
 ```
-src/
-  main.rs        — clap entrypoint
-  cli.rs         — command definitions
-  db.rs          — connection pool, migrations
-  seed.rs        — CREATE TABLE + defaults
-  config.rs      — get/set/validate config
-  memory.rs      — store/recall/search/prune
-  signal.rs      — capture dream_signals
-  dream.rs       — orchestrator: light → REM → deep
-  dream/
-    light.rs     — sort + deduplicate
-    rem.rs       — pattern recognition, scoring
-    deep.rs      — promotion + proposals
-  skill.rs       — CRUD + trigger matching
-  grow.rs        — pattern detection, proposal creation
-  analytics.rs   — session tracking
-  soul.rs        — personality proposals
-  cron.rs        — tokio-cron-scheduler
-  repl.rs        — interactive REPL
-wit/
-  typhoon.wit    — WASM component interface
+  clap entry ── cli/* ── config / memory / skill / soul
+                              │          │
+                           signal ──► dream (light → REM → deep)
+                                        │
+                                  analytics + grow
+                                        │
+                           ┌──────── db (libsql) ────────┐
+                           │                             │
+                     native (direct)              wasm (host imports)
 ```
 
-## Self-Growth Loop
+_Module layout TBD — the file-by-file mapping will be drawn up when a new plan is written against the current PROPOSAL.md. Do not treat the old `OUTDATEDPLAN.md` phase/module layout as binding._
 
-```
-Experience → Dream → Propose → Approve → Grow → Better Experience
-```
+## Non-Negotiable Invariants
 
-1. **Experience**: tool calls → signals, memories get recalled
-2. **Dream** (3am or manual): Light → REM → Deep phases
-3. **Propose**: High-value patterns surface as skill/soul proposals
-4. **Approve**: User reviews, edits, approves
-5. **Grow**: Approved skills improve future sessions
+These are scattered across the three docs; violating any of them is a regression. Check against these before landing anything in their area:
 
-### Value Scoring (High ROI Detection)
+- **Offline-first `init`**: `typhoon init` must create the DB with no network. Cloud replication is added later by `typhoon link`.
+- **Seed idempotency**: seeding is gated on `schema_migrations` version; re-running `init` is a no-op.
+- **All status columns are `NOT NULL` with `CHECK`** — `skills.status`, `skill_proposals.status`, `soul_proposals.status`. No NULL bypass of the state machine.
+- **`skill_triggers` uses composite PK** `(skill_name, phrase)` with `ON DELETE CASCADE`.
+- **Every proposal approval is wrapped in `BEGIN IMMEDIATE … COMMIT`.** Skill approval inserts the skill, inserts triggers, and stamps `skill_proposals.created_skill` atomically. The unique index on `created_skill` makes re-approval a no-op.
+- **Soul approval atomicity**: config update and `soul_proposals.status='approved'` in one transaction.
+- **Stop proposing after 3 rejections per `config_key`** (soul). Check `SUM(rejection_count)` before creating a new proposal for that key.
+- **Stale signal prune**: delete `dream_signals` rows older than 7 days even if never promoted.
+- **Concurrent dream runs are prevented by a file lock.**
+- **`typhoon sql` accepts SELECT only.** Reject INSERT/UPDATE/DELETE/DROP/ALTER/CREATE.
+- **`config set` validates against the row's declared `type`** (`string|int|float|bool|cron`) before writing; float scores clamped to `0.0..=1.0`. SQL `CHECK` is defense-in-depth.
+- **Skills are plain text, never executable.** The runtime retrieves a procedure on trigger match and hands it to the agent as context. The agent picks tools and executes.
+- **Only `status='approved'` skills match.** Draft/disabled are invisible to the matcher. Trigger resolution: longest `phrase` wins, then highest `use_count`.
+- **wasmtime host must implement `db-batch` as `BEGIN IMMEDIATE … COMMIT` with rollback on error.** Never partial-apply. Native builds go through `libsql::Transaction` directly; the wasmtime path goes through the three host imports backed by the same local libSQL connection.
 
-| Signal | Weight |
-|--------|--------|
-| Frequency | 0.30 |
-| Success Rate | 0.25 |
-| Sequence Length | 0.20 |
-| Time Span | 0.15 |
-| Low Corrections | 0.10 |
+## Scoring Thresholds (don't drift these without updating docs)
 
-Threshold: `value_score >= 0.7`, `frequency >= 5`
+- Memory promotion (deep phase): `score >= dream.min_score` (default 0.8), `recall_count >= dream.min_recall` (3), `unique_queries >= dream.min_unique_queries` (3).
+  Weights: Frequency 0.24 · Relevance 0.30 · Diversity 0.15 · Recency 0.15 · Consolidation 0.10 · Conceptual 0.06.
+- Skill proposal: `value_score >= 0.7` AND `frequency >= 5`.
+  Weights: Frequency 0.30 · Success Rate 0.25 · Sequence Length 0.20 · Time Span 0.15 · Low Corrections 0.10.
+- Recency decay: `2^(-age_days / dream.recency_half_life_days)` (default half-life 14d). Max age 30d.
 
-## Agent-First Execution
+## Acceptance Gate
 
-Skills are **plain text instructions** for agents:
-
-```
-Check if the git working directory is clean.
-Run the test suite and ensure all tests pass.
-Build the project in release mode.
-Deploy to preview using vercel --preview.
-```
-
-The agent reads, interprets, decides tools, executes with its own safety. User sees everything, can interrupt.
-
-## Database Tables
-
-- `config` — key/value settings with type validation
-- `memories` — declarative memory with recall tracking
-- `dream_signals` — short-term signals with session tracking
-- `skills` — procedures (plain text) + status NOT NULL (draft/approved/disabled)
-- `skill_triggers` — phrase → skill mapping (composite PK, NOT NULL)
-- `skill_proposals` — discovered patterns awaiting approval + created_skill for idempotency
-- `soul_proposals` — personality changes awaiting approval + rejection_count
-- `dream_runs` — dream cycle logs
-- `session_analytics` — session metrics + tool sequences
-- `schema_migrations` — version tracking
-
-## WASM Deployment
-
-| Target | DB Access | Notes |
-|--------|-----------|-------|
-| Native CLI | libsql crate direct | File at `~/.typhoon/agent.db` |
-| wasmtime | Host libSQL adapter | Host owns file permissions and calls libSQL |
-| Cloudflare Workers | Host Turso HTTP adapter | Cloud-only, no local file |
-| Browser | Host browser/Turso adapter | Cloud-only or browser-compatible storage |
-
-WIT interface imports `db-exec(sql, params)`, `db-query(sql, params)`, and atomic `db-batch(statements)` so each host owns its storage, transaction, and network permissions.
-
-## Atomicity Requirements
-
-All proposal approvals wrapped in `BEGIN IMMEDIATE ... COMMIT`:
-- Skill approval creates skill + triggers atomically
-- `created_skill` column prevents double-approval
-- Soul approval updates config atomically
-- Rejection increments `rejection_count`
-- Stop proposing after 3 total rejections per config_key
-
-## Implementation Phases
-
-1. **Foundation**: init, config, REPL, migrations
-2. **Memory**: CRUD, signals, decay, search
-3. **Dream Cycle**: light/REM/deep, cron daemon
-4. **Skill Growth**: analytics, pattern detection, proposals, approval (atomic)
-5. **Soul**: personality proposals with rejection tracking
-6. **WASM**: wit-bindgen with host DB imports, wasmtime, cloud link
+TBD — the v0.2.0 success-criteria checklist in `OUTDATEDPLAN.md` is no longer authoritative. A new one will be written with the new plan.
