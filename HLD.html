@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Typhoon Way — HLD</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#666; --accent:#0a5; --rule:#e5e5e5; --code-bg:#f6f6f6; }
+  html { font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: var(--fg); }
+  body { max-width: 880px; margin: 2.5rem auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.7rem; margin-top: 0; border-bottom: 2px solid var(--fg); padding-bottom: .4rem; }
+  h2 { font-size: 1.25rem; margin-top: 2.2rem; border-bottom: 1px solid var(--rule); padding-bottom: .25rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.6rem; color: var(--accent); }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .92em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--code-bg); padding: .8rem 1rem; border-radius: 4px; overflow-x: auto; }
+  .toc { background: #fafafa; border: 1px solid var(--rule); padding: .8rem 1.2rem; border-radius: 4px; }
+  .toc ol { margin: .3rem 0; padding-left: 1.4rem; }
+  .toc li { margin: .15rem 0; }
+  .placeholder { color: var(--muted); font-style: italic; }
+  table { border-collapse: collapse; margin: .8rem 0; font-size: .95em; }
+  th, td { border: 1px solid var(--rule); padding: .35rem .7rem; text-align: left; vertical-align: top; }
+  th { background: #fafafa; }
+  .mermaid { background: #fff; padding: .5rem 0; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', flowchart: { htmlLabels: true } });</script>
+</head>
+<body>
+
+<h1>Typhoon Way — High-Level Design</h1>
+
+<div class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#sec-1">System overview</a></li>
+  <li><a href="#sec-2">Architecture</a>
+    <ol>
+      <li><a href="#sec-2-1">Layer view</a></li>
+      <li><a href="#sec-2-2">Logical view (modules)</a></li>
+      <li><a href="#sec-2-3">Process view</a></li>
+      <li><a href="#sec-2-4">Subsystem view</a></li>
+      <li><a href="#sec-2-5">Project layout (workspace, crates, cross-cutting concerns)</a></li>
+    </ol>
+  </li>
+  <li><a href="#sec-3">State diagrams</a>
+    <ol>
+      <li><a href="#sec-3-1">Tool proposal status</a></li>
+      <li><a href="#sec-3-2">Tool lifecycle</a></li>
+      <li><a href="#sec-3-3">Soul proposal status</a></li>
+    </ol>
+  </li>
+</ol>
+</div>
+
+<h2 id="sec-1">1. System overview</h2>
+
+<p>Typhoon is a single Rust binary that observes an operator's work with an LLM agent, mines that work for repeated patterns, and routes high-value patterns through a manual forge loop that produces reusable command-line tools. Typhoon writes feature requests; an external forge writes code; the operator ratifies. The runtime never synthesizes source itself.</p>
+
+<p>The single-binary form is deliberate, but it does not mean a single process. One compiled artifact gives one install path, one upgrade story, one audit surface, and no client/server version skew — the proposal flow run by an interactive command (<code>typhoon tool propose approve</code>) is the same code path the scheduler daemon eventually feeds. The subcommands share too much code (dream phases, signal capture, sandbox checks, proposal flow) for splitting into multiple binaries to pay for itself in a single-user tool. This follows the <code>git</code> / <code>docker</code> / <code>cargo</code> model: one binary, many subcommands, daemon and one-shot modes side by side.</p>
+
+<p>At runtime, multiple processes of that binary coexist, divided into two planes by whether they go through core.</p>
+
+<p>The <strong>use plane</strong> covers every process whose work counts as Typhoon being <em>used</em>. Three sources feed into core. The <em>Telegram gateway</em> (<code>typhoon gateway --telegram</code>) is a long-poll daemon that hosts a chat-driven agent loop and forwards normalized requests to core; this is the canonical "gateway" — a long-running channel adapter. Future channels (Slack, Discord, web hooks) would add new gateway processes alongside it without changing core. The <em>external-agent channel</em> needs no gateway: each agent action is a one-shot subcommand invocation (<code>typhoon signal record</code> to report a tool call and outcome, <code>typhoon memory query</code> to pull retrieval context) that enters core directly through Typhoon's normal CLI dispatch. The <em>scheduler</em> (<code>typhoon cron</code>) is a general scheduler daemon that fires registered targets directly into core — each entry is a cron expression plus a target, where the target is any <code>typhoon</code> subcommand or any tool on PATH. Core, invoked from any of these three sources, dispatches the actual work — calling the frontier LLM (Telegram-gateway path), spawning a tool subprocess, reading the memory store — and tells the signal recorder to persist a signal row for each invocation. The recorder is the only thing that touches the signal store. This is why scheduled triggers flow through core: a scheduled <code>deploy-status</code> run is recorded exactly the way a Telegram-driven one would be, and dream can therefore learn from scheduled use.</p>
+
+<p>The <strong>management plane</strong> bypasses core and operates directly on state. The unified tool manager (<code>typhoon tool</code>, covering both proposal-flow ingestion and lifecycle operations on the tool registry) is here. Dream (<code>typhoon dream</code>, a standalone file-locked batch job that drains signals into proposals and memories) is here. The watchdog (<code>typhoon watchdog</code>) is here too — a standalone supervisor whose only responsibility is to observe the liveness of the other two long-running daemons (gateway and scheduler) and surface failures to the operator. Everything else (DB reachability, stale locks, dream-cycle health, queue depths) is intentionally out of scope at this level and is left to the components themselves or to operator-driven inspection. Smaller operator one-shots (<code>typhoon config</code>, <code>typhoon sql</code>, <code>typhoon dream stats</code>) exist as CLI utilities for direct state inspection but are not architectural components in their own right. None of these generate signals — they are meta-operations on the registry, the config, the signal store itself. The scheduler can fire a management-plane subcommand as one of its targets; the scheduler→core dispatch records the invocation as a signal, but the dispatched subcommand then runs in management mode without producing further signals.</p>
+
+<p>All processes share state through TursoDB transactions and filesystem locks regardless of plane. Process roles and concurrency rules are detailed in §2.3.</p>
+
+<p>Typhoon's own command surface is agent-first. Every subcommand accepts and emits JSON, exits with structured codes, and is safe to compose into pipelines. An interactive operator and an external agent CLI invoke the same commands through the same paths — there is no human-only or agent-only mode. This is the precondition that makes the external-agent channel work without a separate API surface — the agent's one-shot subcommand invocations are the same calls the operator could type by hand.</p>
+
+<p>This document uses these terms consistently. <strong>Typhoon's CLI</strong> is the <code>typhoon</code> binary's own command surface. <strong>Tools</strong> are the forged and operator-promoted artifacts installed into <code>~/.typhoon/bin/</code>; "tool" subsumes both dream-forged CLIs and hand-written scripts the operator has promoted — both live in the same registry under the same rules. The <strong>tool manager</strong> is the <code>typhoon tool</code> subcommand namespace that ingests and operates on the tool registry. <strong>Typhoon core</strong> is the in-binary module that dispatches every "use" invocation. The <strong>signal recorder</strong> is a separate component that persists signals to the signal store and is driven exclusively by core. A <strong>gateway</strong> is a long-running channel adapter — a daemon that listens on one external channel (Telegram today; future Slack, Discord, web hooks) and feeds normalized requests to core. The external-agent channel does not need a gateway because each agent action is a fresh one-shot <code>typhoon</code> subcommand invocation that enters core directly. The <strong>watchdog</strong> is a standalone supervisor process whose sole job is to observe the liveness of the other two long-running daemons — the gateway and the scheduler — and surface failures.</p>
+
+<p>Identity terms. A <strong>canonical user</strong> is the stable per-person identity inside Typhoon, referenced by <code>canonical_user_id</code>. Channels are external; canonical users are internal; a <strong>binding</strong> is a verified mapping from a channel-specific identity (e.g., a Telegram peer + bot account) to a canonical user. There are two roles: the <strong>operator</strong> ratifies proposals, manages tools, and runs administrative commands; a <strong>user</strong> sends signals and consumes memory and tools. v0.1 has exactly one operator — the deploying party, seeded at init — and zero or more additional users who join via channel binding.</p>
+
+<p>Three architectural principles run through everything below. First, <strong>tools are the artifact</strong> — the tool registry (TursoDB rows + binaries in <code>~/.typhoon/bin/</code>, kept atomically consistent) is the system's central artifact store, and every other piece of the lifecycle exists to grow it safely. The registry is fronted by a shared access module — a library, not a process — so both core (for runtime tool lookup during dispatch) and the tool manager CLI (for operator-driven CRUD) read and write through one place; schema knowledge and registry invariants live in this module rather than being re-implemented per consumer. Second, <strong>core dispatches; the recorder records; only core can drive the recorder</strong> — every process that <em>uses</em> Typhoon (the Telegram-channel gateway, the external-agent endpoints, scheduled triggers) routes through core, and only core tells the signal recorder to write. The recorder is a separate component, the sole writer to the signal store; gateways and the scheduler adapt or trigger but never invoke the recorder directly. Anything that bypasses core produces no signal. This split — use plane through core, management plane around it — is the structuring rule for the runtime and shows up directly in §2.</p>
+
+<p>Third, <strong>tools are shared; per-user data is isolated</strong>. A single tool registry serves every canonical user — when one user's signals motivate a tool, every user benefits once the operator approves. Signals, memory, and soul (per-user config) are scoped per <code>canonical_user_id</code>; cross-user reads are a privacy bug. Storage shape is one shared store per concept (one <code>signals</code> table, one <code>memories</code> table, one <code>config</code> table), with rows tagged by <code>canonical_user_id</code>; per-user isolation is enforced by L2 library APIs that take the user ID and filter every read and write — no per-user queues or partitioned tables. Dream is the deliberate exception: its signal scan reads across all users so cross-user pattern overlap can become evidence for a shared tool. The operator role is the gate on tool ratification and registry mutations; user-role processes contribute signals and consume memory and tools, nothing more. This per-user / shared split lives in S5's data-access libraries (§2.4) and is checked at gateway-resolution and management-command entry; the rest of the architecture is identity-agnostic.</p>
+
+<p>The tool manager is firmly on the management plane: it operates directly on the registry and never goes through core, because managing tools is meta, not use. Dream is also management plane — it is a standalone batch process that reads accumulated signals and writes proposals and memories. The two are complements: core feeds the signal table by recording use; dream drains it into the registry's proposal queue; the tool manager ratifies and operates on the result.</p>
+
+<p>The system context is shown below. Typhoon is split into a use plane (everything routing through core, where signals are recorded) and a management plane (everything operating directly on state, no signals generated). Inside the use plane, the gateway layer holds long-running channel daemons (Telegram today; future Slack, Discord, web hooks); the external-agent channel bypasses the gateway layer because each agent action is a one-shot subcommand into core. Gateways, the external-agent endpoints, and the scheduler are the only paths into core. The frontier LLM is reached only through core, and only on the Telegram-gateway path. Two paths converge on the tool manager: dream writes new proposals into its queue, and forged source returns through it via <code>tool propose submit</code>. Solid arrows are flows Typhoon controls; dotted arrows mark the forge step, which the operator drives outside Typhoon's control plane.</p>
+
+<div class="mermaid">
+flowchart TB
+    OP([Operator])
+    USERS([Users<br/><i>via channel binding</i>])
+
+    subgraph Channels[" "]
+      direction LR
+      TG[Telegram bot]
+      EXT["External agent CLI<br/>Claude Code, Cursor, Codex<br/><i>operator only in v0.1</i>"]
+    end
+
+    subgraph Typhoon["Typhoon — one binary, two planes"]
+      direction TB
+
+      subgraph UsePlane["Use plane — routes through core, records signals"]
+        direction TB
+
+        subgraph Gateway["Gateway — long-running channel adapters"]
+          direction LR
+          TGGW["<b>typhoon gateway --telegram</b><br/>long-poll daemon<br/><i>hosts chat-driven<br/>agent loop</i>"]
+        end
+
+        CRON["<b>typhoon cron</b><br/>general scheduler<br/><i>fires entries: any typhoon<br/>subcommand or tool on PATH</i>"]
+        CORE{{"<b>Typhoon core</b><br/>dispatcher<br/><i>master path for every use;<br/>sole driver of the recorder</i>"}}
+        REC[/"<b>Signal recorder</b><br/><i>sole writer to the signal store;<br/>driven only by core</i>"/]
+      end
+
+      subgraph MgmtPlane["Management plane — bypasses core, no signals"]
+        direction TB
+        TOOLMGR["<b>typhoon tool — tool manager</b><br/><b>ingest:</b> propose list / show / submit /<br/>approve / reject<br/><b>operate:</b> list / show / diff / history /<br/>disable / enable / rollback /<br/>delete / purge / promote / sync"]
+        DREAM["<b>typhoon dream</b><br/><i>standalone batch; file-locked.<br/>Reads signals, writes proposals + memories</i>"]
+        WATCH["<b>typhoon watchdog</b><br/><i>standalone supervisor;<br/>watches the other two daemons<br/>(gateway and scheduler)</i>"]
+      end
+    end
+
+    subgraph LLMs[" "]
+      direction LR
+      OLLM["Frontier LLM<br/><i>Telegram-gateway path only</i>"]
+      DLLM[Dream LLM<br/>cheap batch]
+    end
+
+    subgraph State["Shared state"]
+      direction LR
+      DB[(TursoDB<br/>local + optional<br/>cloud replica)]
+      FS["Filesystem<br/>~/.typhoon/bin<br/>.history/, dream.lock"]
+    end
+
+    FORGE["External forge<br/>e.g. Claude Code CLI"]
+
+    OP <--> TG
+    OP <--> EXT
+    USERS <--> TG
+    OP --> TOOLMGR
+    OP --> DREAM
+    OP -.drives externally.-> FORGE
+    FORGE -.source + correctness argument.-> OP
+    FORGE -.via operator: tool propose submit.-> TOOLMGR
+
+    TG <--> TGGW
+    TGGW --> CORE
+    EXT -->|typhoon signal record / memory query| CORE
+    CRON --> CORE
+
+    CORE <-->|prompts + tool-call loop| OLLM
+    CORE -->|exec tools on PATH| FS
+    CORE -->|memory reads| DB
+    CORE ==>|tells recorder to record| REC
+    REC ==>|writes signals| DB
+
+    CRON -.dispatches via core.-> DREAM
+
+    DREAM <-->|spec writing| DLLM
+    DREAM -->|writes proposals: awaiting_forge| TOOLMGR
+    DREAM <--> DB
+    TOOLMGR <--> DB
+    TOOLMGR <--> FS
+
+    WATCH -.observes liveness.-> TGGW
+    WATCH -.observes liveness.-> CRON
+</div>
+
+<p>Typhoon's lifecycle moves through six stages. Stages 2 through 6 form a continuous loop in steady state; stage 1 runs once per machine.</p>
+
+<h3>Stage 1 — Cold start</h3>
+<p>The operator initialises a Typhoon instance against a TursoDB account. Schema migrations and seed run together and are idempotent: re-running the bootstrap on an already-initialised database is a no-op. The seed creates the operator as the first canonical user and marks them with the operator role; this is the only canonical user that exists at end of bootstrap. A cloud replica may be linked at this point or later. After bootstrap the runtime is dormant — no daemon runs, no signals exist. One Typhoon instance owns one TursoDB database that serves multiple users (the operator plus any users who later join via channel binding); the optional cloud replica is for read access from other devices, not for running a second writer instance against the same database. Multi-instance sync is not supported.</p>
+
+<h3>Stage 2 — Online interaction</h3>
+<p>The operator opens a session through one of two channels. Each channel has its own gateway process, but both gateways feed into the same core, so core sees a uniform interface regardless of channel.</p>
+
+<p><strong>Telegram channel</strong> (<code>typhoon gateway --telegram</code>). The Telegram gateway is a long-poll daemon that hosts the agent loop. On every incoming message, the gateway resolves the Telegram peer (channel + bot account + peer ID) to a canonical user via the binding store. A bound peer flows straight into the loop. An unbound peer goes through onboarding — the binding flow's exact shape is a DLD detail; the HLD only requires that a message is never accepted from an unverified peer. Once the canonical user is known, every step routes through core: the gateway asks core for that user's relevant memories, sends the prompt plus available tools to the frontier LLM, hands any tool calls the LLM emits to core for execution (shell, filesystem, tools on PATH), feeds the results back to the LLM, loops until the LLM stops, and posts the final reply to the chat. As core dispatches each invocation, it tells the signal recorder to write a signal row tagged with that user's <code>canonical_user_id</code>. In this path Typhoon is the agent runtime; core is the dispatcher under it.</p>
+
+<p><strong>External-agent channel</strong> (Claude Code, Cursor, Codex, …). The operator runs the agent on their machine; the agent hosts its own LLM client, its own tool dispatcher, and its own conversation loop. Typhoon never sees the frontier LLM. The agent uses Typhoon by invoking subcommands directly — <code>typhoon memory query</code> for retrieval context, <code>typhoon signal record</code> to report a tool call and outcome. In v0.1 only the operator uses this channel, so each invocation defaults to the operator's <code>canonical_user_id</code> with no explicit identity argument; when a second user wants this channel later, an explicit <code>--user</code> flag will be added. Each invocation is a one-shot process that enters core through Typhoon's normal CLI dispatch; core then drives the recorder (or reads memory) just as it would for the Telegram-channel path. A signal row is a signal row regardless of which source delivered the call. In this path the agent runtime lives outside Typhoon, but channel data still flows into core and through the recorder into the signal store.</p>
+
+<p>This pattern generalizes — adding a future channel (Slack, Discord, web hooks) means writing a new gateway process that drives core through the same interface. Core does not change, the signal model does not change, and the management plane is unaffected.</p>
+
+<p>After a turn closes (in either channel), a success flag is stamped onto the signal chain by a simple post-hoc rule: clean exit plus no corrective next turn. Signals accumulate; nothing else happens online.</p>
+
+<h3>Stage 3 — Dream</h3>
+<p>The dream cycle is triggered by the scheduler firing the seeded entry (scheduler→core→spawn dream) or by the operator invoking it directly. Once dream starts, it runs on the management plane: it operates directly on state without going back through core, since reading signals and writing proposals is meta and would loop if it generated more signals. A file lock guarantees a single dream runs at a time. Three phases run sequentially against the accumulated signals: a light phase deduplicates and sorts; a REM phase clusters successful signal chains, detects repeated workflows, and checks each candidate against the existing tool registry to flag collisions and replacement candidates; a deep phase, using a cheap batch LLM, emits three kinds of output — memories that land directly in the memory store, tool feature requests that enter the proposal queue with status <code>awaiting_forge</code>, and soul proposals that enter their own queue. Stale signals that never graduated are pruned. Dream is the canonical scheduled job in v0.1, but it shares the scheduler mechanism with any other entry the operator adds.</p>
+
+<h3>Stage 4 — Forge (out-of-band)</h3>
+<p>The operator reads <code>awaiting_forge</code> requests via the tool manager (<code>typhoon tool propose list / show</code>) and drives an external forge to produce source code that satisfies the request. This step is deliberately outside Typhoon's control: Typhoon does not invoke the forge, does not constrain the language, and does not judge the source's correctness. The operator submits the resulting source (with any correctness argument the forge produced) back through the tool manager (<code>typhoon tool propose submit</code>). On submission, Typhoon attaches the source, runs a platform-contract sandbox check that verifies the request's tier claim is honest, and runs a regex lint that rejects hardcoded absolute paths. A failed tier claim downgrades the tier silently — the source is preserved and review intensity rises. A failed path lint is fatal and bounces the proposal. On pass the proposal advances to <code>awaiting_user</code>.</p>
+
+<h3>Stage 5 — Ratification</h3>
+<p>The operator reviews the request, the delivery, and the forge's correctness argument together via the tool manager (<code>typhoon tool propose approve | reject</code>). Approval is one atomic transaction: the registry row is inserted, the tool binary is written into the install directory, a seed memory is written so the agent can discover the new tool, and — for a replacement — the predecessor is moved into <code>.history/</code>. Either everything succeeds or nothing does; there is no partial install. Soul proposals follow the same pattern with one substitution: the artifact is a <code>config</code> value rather than a tool binary, and the atomic write updates the row instead of the filesystem. A pattern rejected three times stops dream from re-proposing it.</p>
+
+<h3>Stage 6 — Steady use and dream-driven evolution</h3>
+<p>Once a tool is installed, every user benefits from it — the registry is shared. Memory retrieval surfaces the tool in any user's subsequent sessions; the agent invokes it as an ordinary subprocess on PATH. Each invocation increments the registry's aggregate use count and (on clean exit) the success count, with a per-user breakdown also recorded so dream can detect tools that work for one user but fail for another. These counters feed back into dream's next pass: a rising error rate produces a replacement proposal that goes through the same forge-then-ratify path as the original; prolonged disuse (default 30 days) produces a deprecation proposal that, once approved, moves the tool to <code>disabled</code> and archives the binary. Evolution is therefore symmetric with creation — same proposal queue, same operator approval, same atomic install.</p>
+
+<h3>Stage 7 — Operator-driven tool management and inspection</h3>
+<p>The tool manager (<code>typhoon tool</code>) is the operator's direct, agent-independent control surface for the registry, covering the entire lifecycle through one unified namespace. Every <code>typhoon tool</code> subcommand requires the operator role; user-role processes can use installed tools but cannot mutate the registry. The ingestion half (<code>tool propose list / show / submit / approve / reject</code>) is what stages 4 and 5 invoke. The operations half acts on already-installed tools: read-only listing, inspection, and lineage (<code>tool list</code> with filters by tier or staleness, <code>tool show</code> for source/stats/origin, <code>tool diff</code> and <code>tool history</code> for version comparison) and state-changing commands (<code>tool disable</code> takes a tool off PATH while keeping the registry row; <code>tool enable</code> reverses it; <code>tool rollback</code> restores the previous version from <code>.history/</code>; <code>tool delete</code> removes the registry row and archives the binary; <code>tool purge</code> hard-deletes including <code>.history/</code>; <code>tool promote</code> adopts a hand-written script the operator authored outside the dream loop and adds it as <code>approved_by='user'</code> with no origin proposal; <code>tool check-deps</code> scans declared external dependencies across the registry; <code>tool sync</code> rebuilds tool binaries from registry source on a second machine). Every state change is atomic against the registry's metadata-and-binary pair. Beyond the registry, broader inspection paths are read-only: <code>typhoon sql</code> for SELECT queries, <code>typhoon dream stats</code> for the proposal funnel, and the watchdog for daemon-liveness status. <code>typhoon sql</code> accepts SELECT only; writes (INSERT / UPDATE / DELETE / DDL) are hard-rejected so the inspection path can never accidentally mutate state.</p>
+
+<h2 id="sec-2">2. Architecture</h2>
+<p class="placeholder">Purpose: describe Typhoon's structure from three complementary angles, then group the pieces into subsystems that partition the DLD.</p>
+
+<h3 id="sec-2-1">2.1 Layer view</h3>
+
+<p>The layer view shows the static stack of code dependencies inside the Typhoon binary. The single rule: dependencies point downward. Code at any layer may call any layer below it but never invokes — or imports from — a layer above. Same-layer dependencies are allowed but kept minimal. The runtime topology of these layers (which processes, which planes, which concurrency) is the subject of §2.3; here we are concerned only with what code can reach what.</p>
+
+<div class="mermaid">
+flowchart TB
+    subgraph L4["L4 — Subcommand entry points (Typhoon's CLI surface)"]
+      direction LR
+      L4a["typhoon gateway --telegram"]
+      L4b["typhoon cron"]
+      L4c["typhoon dream / dream stats"]
+      L4d["typhoon tool ..."]
+      L4e["typhoon watchdog"]
+      L4f["typhoon signal record /<br/>memory query"]
+      L4g["typhoon config / sql /<br/>init / link"]
+    end
+
+    subgraph L3["L3 — Runtime modules (workers and dispatch)"]
+      direction LR
+      L3core["Core dispatcher"]
+      L3rec["Signal recorder"]
+      L3gw["Gateway impl<br/>(Telegram agent loop)"]
+      L3cron["Cron scheduler"]
+      L3dream["Dream batch"]
+      L3tool["Tool manager"]
+      L3watch["Watchdog"]
+    end
+
+    subgraph L2["L2 — Data access layer (domain libraries)"]
+      direction LR
+      L2reg["Tool registry<br/>(shared)"]
+      L2mem["Memory store<br/>(per user)"]
+      L2sig["Signal store<br/>(per user)"]
+      L2prop["Proposal queue<br/>(cli + soul)"]
+      L2cfg["Config<br/>(system + per user)"]
+      L2id["Identity bindings<br/>+ role lookup"]
+    end
+
+    subgraph L1["L1 — Adapters (external system clients)"]
+      direction LR
+      L1db["TursoDB / libSQL<br/>client + transactions"]
+      L1fs["Filesystem ops<br/>atomic writes, locks"]
+      L1llm["LLM clients<br/>frontier + dream"]
+      L1tg["Telegram client"]
+      L1sbx["Sandbox + path lint"]
+    end
+
+    subgraph L0["L0 — Foundation (cross-cutting)"]
+      direction LR
+      L0log["Logging"]
+      L0err["Error types"]
+      L0time["Time / clock"]
+    end
+
+    L4 ==>|allowed| L3
+    L3 ==>|allowed| L2
+    L2 ==>|allowed| L1
+    L1 ==>|allowed| L0
+    L3 -.also.-> L0
+    L2 -.also.-> L0
+</div>
+
+<p><strong>L4 — Subcommand entry points.</strong> One thin handler per <code>typhoon &lt;verb&gt;</code> subcommand. Parses args, validates inputs, dispatches to a single L3 module. No domain logic lives here; an L4 handler that grows business rules is a smell that the rules belong in L3.</p>
+
+<p><strong>L3 — Runtime modules.</strong> The workers that do something at runtime: core (dispatcher), signal recorder (driven only by core), the gateway implementation (Telegram-channel agent loop), the cron scheduler, the dream batch, the tool manager, the watchdog. L3 modules talk to each other only through narrow contracts — for example, core is the only L3 module that may invoke the recorder.</p>
+
+<p><strong>L2 — Data access layer (domain libraries).</strong> The layer that owns Typhoon's data semantics. One library per concept: tool registry (the shared module from §1, used by both core and the tool manager), memory store, signal store, proposal queue (covering both <code>cli_proposals</code> and <code>soul_proposals</code>), config, and the identity binding store (channel identity → <code>canonical_user_id</code>, plus role lookup). Each library encapsulates schema knowledge and the invariants for its concept — atomicity of metadata-and-binary in the registry, success tagging in the signal store, Top-K + similarity bounds in memory retrieval, type validation and clamping in config, verified-binding semantics in identity. The shared/per-user split lives here too: tool registry is unscoped (shared); memory store, signal store, and the per-user slice of config take a <code>canonical_user_id</code> on every API; identity bindings own the operator-vs-user role check that gates management-plane operations. Multiple L3 modules consume the same library so those invariants live in one place.</p>
+
+<p><strong>L1 — Adapters.</strong> The only layer allowed to talk to the outside world: TursoDB / libSQL client (with transaction primitives), filesystem operations (atomic install to <code>~/.typhoon/bin/</code>, archival to <code>.history/</code>, lock files), LLM clients (frontier and dream), Telegram client, and the sandbox + path-lint helpers used during forge submission. L1 adapters know nothing of Typhoon's data model — schema, lineage, atomicity rules, success tagging, retrieval bounds all live one layer up in L2. In v0.1 the dependency is wired directly (L2 imports L1 concrete clients); the data semantics still live in L2, so swapping a concrete adapter (e.g., cloud-replicated TursoDB ↔ a plain local libSQL file) requires only that the new adapter expose the same surface — no L2 rewrite, no L3 awareness. A full Ports-and-Adapters inversion (L1 implementing traits owned by L2) is deferred until adapter swapping becomes a real requirement; for a single-user v0.1 it would be boilerplate without payoff.</p>
+
+<p><strong>L0 — Foundation.</strong> Cross-cutting primitives any layer may use: logging, error types, time and clock. Drawn as L0 so the dependency rule is unambiguous; in practice these are ambient and the diagram's dotted "also" arrows from L3 and L2 are reminders, not exhaustive.</p>
+
+<p>Three boundaries are load-bearing. First, <strong>L4 stays thin</strong> — entry points never contain logic; they dispatch. Second, <strong>L3 never reaches L1 directly</strong> — runtime modules go through L2 libraries, which is what makes registry / signal / memory invariants enforceable in one place. Third, <strong>L2 never imports L3</strong> — a library reaching into a worker would invert the stack and create cycles. The use-plane / management-plane split (§2.3) is a runtime concern and is invisible at this layer; both planes are made of the same L3 modules calling the same L2 libraries.</p>
+
+<h3 id="sec-2-2">2.2 Logical view (modules)</h3>
+
+<p>The logical view enumerates the modules — function groups — that make up Typhoon. Each module has one job, named clearly, with explicit consumers and producers. The view spans only the two layers where Typhoon's code lives: L3 (runtime modules — workers and dispatch) and L2 (the data access layer). L4 entry points are thin handlers that dispatch into L3, so they are not modules in their own right; L1 adapters and L0 foundation are infrastructure that L2 uses, also not enumerated here. The function-to-module matrix and the box-and-arrow diagram below let a reader trace any capability to the modules that implement it.</p>
+
+<h4>Module catalog</h4>
+
+<table>
+  <thead>
+    <tr><th>Module</th><th>L</th><th>Purpose</th><th>Key dependencies</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><b>Bootstrap</b></td><td>L3</td><td>Initialise a Typhoon instance: run schema migrations, write seed config, optionally link a cloud replica. Idempotent.</td><td>Config, TursoDB adapter</td></tr>
+    <tr><td><b>Telegram gateway</b></td><td>L3</td><td>Long-poll daemon that hosts the Telegram-channel agent loop: resolve the incoming Telegram peer to a canonical user via Identity bindings (or run onboarding for an unbound peer), normalise the message, drive core scoped to that user, post replies.</td><td>Core, Identity bindings, Telegram adapter</td></tr>
+    <tr><td><b>External-agent endpoints</b></td><td>L3</td><td>Adapter logic for external-agent reports and queries: validate the input shape, default the canonical_user_id to the operator (v0.1; explicit <code>--user</code> later), invoke core. The L4 <code>signal record</code> / <code>memory query</code> handlers are thin wrappers that call into this module.</td><td>Core, Identity bindings</td></tr>
+    <tr><td><b>Scheduler</b></td><td>L3</td><td>Cron daemon and entry registry: tick on schedule, fire registered targets through core, track next-run times.</td><td>Core</td></tr>
+    <tr><td><b>Core</b></td><td>L3</td><td>Use-plane dispatcher: receive invocations carrying a <code>canonical_user_id</code> from gateway / scheduler / external-agent endpoints, orchestrate executors (LLM call, tool exec, memory read scoped to the user), drive the recorder for each invocation.</td><td>Signal recorder, Tool registry, Memory store, LLM adapter</td></tr>
+    <tr><td><b>Signal recorder</b></td><td>L3</td><td>Sole writer to the signal store. Driven only by core; persists one signal row per dispatched invocation, tagged with the originating <code>canonical_user_id</code>.</td><td>Signal store</td></tr>
+    <tr><td><b>Dream cycle</b></td><td>L3</td><td>Standalone batch (file-locked single-writer). Runs light → REM → deep phases against accumulated signals; writes memories and proposals; prunes stale signals.</td><td>Signal store, Memory store, Proposal queue, Tool registry, Dream LLM adapter</td></tr>
+    <tr><td><b>Tool manager</b></td><td>L3</td><td>Full tool-registry lifecycle through the unified <code>typhoon tool</code> namespace: ingest (proposal flow with embedded forge validators — sandbox tier check + path lint) and operate (list/show/diff/disable/enable/rollback/delete/purge/promote/sync). Every subcommand checks operator role before mutating; users may invoke read-only listing of tools.</td><td>Proposal queue, Tool registry, Identity bindings (role check), Sandbox + path-lint adapter</td></tr>
+    <tr><td><b>Soul manager</b></td><td>L3</td><td>Per-user flow for soul proposals: list / show / approve / reject. A user may approve their own proposals; the operator may approve any. Approval atomically updates the user's config row and marks the proposal approved.</td><td>Proposal queue, Config, Identity bindings (role check)</td></tr>
+    <tr><td><b>Watchdog</b></td><td>L3</td><td>Standalone supervisor. Observes the two long-running daemons (gateway and scheduler) and surfaces failures.</td><td>(observes daemons; reads no L2 library)</td></tr>
+    <tr><td><b>Tool registry</b></td><td>L2</td><td>Data-access library for the tool registry — metadata rows + tool binaries on disk. Atomic metadata-and-binary writes; lineage chain; active-tools-only filter; <code>.history/</code> archival.</td><td>TursoDB adapter, Filesystem adapter</td></tr>
+    <tr><td><b>Memory store</b></td><td>L2</td><td>Data-access library for memories. One shared <code>memories</code> table; rows tagged with <code>canonical_user_id</code>. Every API takes <code>canonical_user_id</code> and filters every read and write — no per-user tables. Mem0-style extraction (write path, used by dream); bounded retrieval (read path, used by core) with Top-K + similarity threshold + token budget. Cross-user reads are forbidden at the API surface.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Signal store</b></td><td>L2</td><td>Data-access library for signals. One shared <code>signals</code> table; every row carries <code>canonical_user_id</code>. Write path used by recorder only (one shared writer, scoping happens via the tag on each row). Read path used by dream, which deliberately scans across all users to cluster cross-user patterns; user-scoped reads are also available via the API. Encapsulates success-tagging rule and stale-prune.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Proposal queue</b></td><td>L2</td><td>Data-access library for both <code>cli_proposals</code> (tool proposals — shared, originating user tagged) and <code>soul_proposals</code> (per-user). Status transitions; 3-strike rejection tracking per pattern (cli) / per <code>(canonical_user_id, config_key)</code> (soul); atomic state advance.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Config</b></td><td>L2</td><td>Data-access library for typed config values. One shared <code>config</code> table; rows split logically into a system-scoped section (<code>canonical_user_id IS NULL</code>; e.g., <code>dream.cron</code>) and a per-user section (rows tagged with <code>canonical_user_id</code>; e.g., <code>agent.tone</code>). Get / set / list / validate, range clamping, defense-in-depth via SQL CHECK.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Identity bindings</b></td><td>L2</td><td>Data-access library for the binding table (channel + account_id + peer_id → <code>canonical_user_id</code>) and the canonical-user table (id + role). Verified-binding semantics; role lookup; binding lifecycle (create / verify / revoke).</td><td>TursoDB adapter</td></tr>
+  </tbody>
+</table>
+
+<h4>Function-to-module matrix</h4>
+
+<p>Each row traces one capability through the modules that participate in it. Order roughly matches data flow.</p>
+
+<table>
+  <thead>
+    <tr><th>Capability</th><th>Modules involved (left to right)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Initialise a Typhoon instance</td><td>Bootstrap → Config + Identity bindings (seed operator) → (TursoDB adapter)</td></tr>
+    <tr><td>Telegram-channel turn (full agent loop)</td><td>Telegram gateway → Identity bindings (resolve peer) → Core → Memory store (retrieval, scoped to user) → (LLM adapter) → Tool registry → Signal recorder → Signal store (tagged with user)</td></tr>
+    <tr><td>Telegram onboarding (unbound peer)</td><td>Telegram gateway → Identity bindings (create new canonical user; mark verified)</td></tr>
+    <tr><td>External-agent tool report</td><td>External-agent endpoints → Identity bindings (default to operator) → Core → Signal recorder → Signal store</td></tr>
+    <tr><td>External-agent memory query</td><td>External-agent endpoints → Identity bindings (default to operator) → Core → Memory store (scoped to operator)</td></tr>
+    <tr><td>Scheduled dream run</td><td>Scheduler → Core → Dream cycle → Signal store + Memory store + Tool registry + Proposal queue</td></tr>
+    <tr><td>Forge submission &amp; ratification</td><td>Operator → Tool manager (Identity role check, validators: sandbox + path lint) → Proposal queue → Tool registry <i>(atomic at approve)</i></td></tr>
+    <tr><td>Soul proposal ratification</td><td>User or Operator → Soul manager (Identity role check) → Proposal queue → Config (per-user row) <i>(atomic at approve)</i></td></tr>
+    <tr><td>Tool replacement</td><td>Dream cycle → Proposal queue → Operator → Tool manager → Tool registry <i>(atomic swap with <code>.history/</code>)</i></td></tr>
+    <tr><td>Tool deprecation</td><td>Dream cycle → Proposal queue → Operator → Tool manager → Tool registry</td></tr>
+    <tr><td>Daemon-liveness check</td><td>Watchdog → (Telegram gateway, Scheduler)</td></tr>
+  </tbody>
+</table>
+
+<h4>Module relationships</h4>
+
+<p>The diagram below shows the modules and the load-bearing dependencies between them. Edges are not exhaustive — only the dependencies that matter for understanding Typhoon's structure are drawn. All L2 modules also depend on L1 adapters (TursoDB, Filesystem); those edges are omitted to keep the picture readable.</p>
+
+<div class="mermaid">
+flowchart TB
+    subgraph L3["L3 — Runtime modules"]
+      direction TB
+      BOOT[Bootstrap]
+      TGGW[Telegram gateway]
+      EXTEP[External-agent endpoints]
+      SCHED[Scheduler]
+      CORE[Core]
+      REC[Signal recorder]
+      DREAM[Dream cycle]
+      TOOL[Tool manager<br/>+ forge validators]
+      SOUL[Soul manager]
+      WATCH[Watchdog]
+    end
+
+    subgraph L2["L2 — Data access layer"]
+      direction LR
+      REG[Tool registry<br/>shared]
+      MEM[Memory store<br/>per user]
+      SIG[Signal store<br/>per user]
+      PROP[Proposal queue]
+      CFG[Config<br/>system + per user]
+      ID[Identity bindings<br/>+ role lookup]
+    end
+
+    %% intra-L3
+    TGGW --> CORE
+    EXTEP --> CORE
+    SCHED --> CORE
+    CORE ==>|drives| REC
+
+    %% Identity reads at the edges
+    TGGW --> ID
+    EXTEP --> ID
+    TOOL --> ID
+    SOUL --> ID
+
+    %% L3 → L2
+    CORE --> REG
+    CORE --> MEM
+    REC --> SIG
+    DREAM --> SIG
+    DREAM --> MEM
+    DREAM --> PROP
+    DREAM --> REG
+    TOOL --> PROP
+    TOOL --> REG
+    SOUL --> PROP
+    SOUL --> CFG
+    BOOT --> CFG
+    BOOT --> ID
+
+    %% Watchdog
+    WATCH -.observes.-> TGGW
+    WATCH -.observes.-> SCHED
+</div>
+
+<p>Three relationships in this diagram carry invariants worth naming. <strong>Core ⇒ Signal recorder</strong> is the only edge into the recorder; nothing else writes to the signal store. <strong>Dream and Tool manager both touch Tool registry and Proposal queue</strong>, but they are sequential — dream writes a proposal, the tool manager later promotes it to a registry mutation; they never race because dream is file-locked and the tool manager runs only on operator action. <strong>Tool manager → Tool registry</strong> and <strong>Soul manager → Config</strong> are the two atomic-mutation edges; both are wrapped in transactions that span the corresponding Proposal queue update.</p>
+
+<h3 id="sec-2-3">2.3 Process view</h3>
+
+<p>The process view is about runtime topology: what OS processes exist, which run continuously, which come and go, what they share, and how concurrency is bounded. It complements §2.1 (static dependencies) and §2.2 (functional modules) — the same modules can run in different processes and concurrency contexts depending on which subcommand is invoked.</p>
+
+<h4>Process inventory</h4>
+
+<table>
+  <thead>
+    <tr><th>Process</th><th>Lifetime</th><th>Singleton?</th><th>How enforced</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><b>Telegram gateway</b> (<code>typhoon gateway --telegram</code>)</td><td>Long-running daemon</td><td>Yes</td><td>Operator deploys one per Telegram bot token</td></tr>
+    <tr><td><b>Scheduler</b> (<code>typhoon cron</code>)</td><td>Long-running daemon</td><td>Yes</td><td>Operator deploys one</td></tr>
+    <tr><td><b>Watchdog</b> (<code>typhoon watchdog</code>)</td><td>Long-running daemon</td><td>Yes</td><td>Operator deploys one</td></tr>
+    <tr><td><b>Dream batch</b> (<code>typhoon dream</code>)</td><td>Transient (cron-fired or manual)</td><td>Yes</td><td>Filesystem lock (<code>dream.lock</code>); concurrent invocations exit with lock error</td></tr>
+    <tr><td><b>Tool manager</b> (<code>typhoon tool ...</code>)</td><td>One-shot per invocation</td><td>No</td><td>Concurrent invocations serialise through TursoDB transactions (<code>BEGIN IMMEDIATE</code>)</td></tr>
+    <tr><td><b>Soul manager</b> (<code>typhoon soul ...</code>)</td><td>One-shot per invocation</td><td>No</td><td>Same — DB transactions serialise</td></tr>
+    <tr><td><b>External-agent endpoints</b> (<code>typhoon signal record</code>, <code>typhoon memory query</code>)</td><td>One-shot per invocation</td><td>No</td><td>High-concurrency expected; DB transactions serialise writes; reads are non-blocking</td></tr>
+    <tr><td><b>Bootstrap</b> (<code>typhoon init</code>, <code>typhoon link</code>)</td><td>One-shot</td><td>Idempotent</td><td><code>schema_migrations</code> version check; re-running is a no-op</td></tr>
+    <tr><td><b>Inspection</b> (<code>typhoon sql</code>, <code>typhoon dream stats</code>, <code>typhoon config get</code>)</td><td>One-shot</td><td>No</td><td>Read-only; no coordination needed</td></tr>
+  </tbody>
+</table>
+
+<p>Three long-running daemons, one transient that needs an exclusive lock, and several flavours of one-shot. There is no inter-process IPC: every process coordinates through TursoDB and the filesystem only. New processes can join at any time without coordination handshake — they read state, optionally take a lock, do their work, exit.</p>
+
+<h4>Coordination — transactions and the dream lock</h4>
+
+<p>Two mechanisms hold the runtime together: SQL transactions for atomic multi-step state changes, and a filesystem lock for the one operation that must not run twice.</p>
+
+<p><strong>Transactions.</strong> Every state change that affects more than one row, or more than one storage medium (DB + filesystem), is wrapped in <code>BEGIN IMMEDIATE … COMMIT</code> with rollback on any failure. The atomic operations:</p>
+
+<table>
+  <thead><tr><th>Operation</th><th>What is committed atomically</th></tr></thead>
+  <tbody>
+    <tr><td>Tool approval (new)</td><td>registry insert + binary write to <code>~/.typhoon/bin/</code> + seed memory write + proposal status → approved</td></tr>
+    <tr><td>Tool approval (replacement)</td><td>old binary → <code>.history/&lt;name&gt;.&lt;ts&gt;</code> + new binary install + registry lineage update + seed memory update + proposal status → approved</td></tr>
+    <tr><td>Tool rollback</td><td>current binary → <code>.history/</code> + previous version restored from <code>.history/</code> + registry update</td></tr>
+    <tr><td>Tool disable / enable / delete / purge</td><td>registry status mutation + binary move (or restore, or hard delete) consistent with the new status</td></tr>
+    <tr><td>Soul approval</td><td>config row update + proposal status → approved</td></tr>
+    <tr><td>Forge submission</td><td>source attach + tier downgrade if sandbox check disagrees + proposal status → awaiting_user</td></tr>
+  </tbody>
+</table>
+
+<p>Either everything in a transaction succeeds or none of it does — there is no half-installed tool, no orphan registry row, no config change without a matching proposal close-out. Because SQL transactions cannot roll back filesystem writes, atomicity across the DB+FS pair is implemented by writing tool binaries to <code>~/.typhoon/bin/.staging/&lt;name&gt;.&lt;txn-id&gt;</code> first, then atomic <code>rename(2)</code> into <code>~/.typhoon/bin/&lt;name&gt;</code> only after <code>COMMIT</code> succeeds. On commit failure the staging file is unlinked. A crash between commit and rename can leave a staging file behind; a low-priority janitor (a sub-mode of <code>typhoon tool sync</code>) sweeps stale staging files and orphan binaries with no live registry row. The staging+rename pattern is the contract; the janitor is the safety net.</p>
+
+<p><strong>Dream lock.</strong> The dream batch acquires <code>~/.typhoon/dream.lock</code> via filesystem locking before doing any work. A second invocation while the first holds the lock fails fast with a lock-error exit code. This guards both operator-invoked dream and cron-fired dream — the lock does not care who tried to start the second instance. The lock is process-scoped (released on process exit, even on crash), so a stale lock from a dead PID resolves itself; the watchdog has no role in lock cleanup.</p>
+
+<h4>Use plane vs. management plane at runtime</h4>
+
+<p>The runtime makes the §1 use/management split concrete in a single dimension: does the process call core during its work? Use-plane processes do — Telegram gateway in every turn of its agent loop, the scheduler when it fires a registered entry, the external-agent endpoints when they handle a report or query. Their work generates signals because core drives the recorder. Management-plane processes do not — tool manager, soul manager, dream, watchdog, bootstrap, and inspection all operate directly on L2 libraries and adapters, never through core, and never produce signals as a side effect of their work. The same Typhoon binary serves both planes; which one a given process belongs to is determined by which subcommand was invoked.</p>
+
+<p>One subtlety: when cron fires a management-plane subcommand (for example, the seeded <code>typhoon dream</code> entry), the cron-daemon side of the dispatch goes through core and a signal is recorded for the act of firing. The spawned dream subprocess then runs as a management-plane process and produces no further signals. So scheduled management activity is observable in the signal store as a single "fired" event, not as a stream of internal events.</p>
+
+<h4>Process map</h4>
+
+<div class="mermaid">
+flowchart TB
+    subgraph Daemons["Long-running daemons"]
+      direction LR
+      D1[Telegram gateway<br/>typhoon gateway --telegram]
+      D2[Scheduler<br/>typhoon cron]
+      D3[Watchdog<br/>typhoon watchdog]
+    end
+
+    subgraph Locked["File-locked transient"]
+      DREAM[Dream batch<br/>typhoon dream<br/><i>holds dream.lock</i>]
+    end
+
+    subgraph OneShots["One-shot processes"]
+      direction LR
+      OPS[Tool manager<br/>Soul manager<br/>Bootstrap<br/>Inspection]
+      AGT[External-agent endpoints<br/>signal record / memory query]
+      EXT[Forged tool subprocess<br/>spawned by core or cron]
+    end
+
+    subgraph Shared["Shared state — sole coordination medium"]
+      direction LR
+      DB[(TursoDB<br/><b>BEGIN IMMEDIATE</b><br/>for atomic writes)]
+      FS["Filesystem<br/>~/.typhoon/bin, .history/<br/>dream.lock"]
+    end
+
+    Daemons --> Shared
+    Locked --> Shared
+    OneShots --> Shared
+
+    D2 -.spawns.-> DREAM
+    D2 -.spawns.-> OPS
+    D2 -.spawns via core.-> EXT
+    D1 -.spawns via core.-> EXT
+    D3 -.observes liveness.-> D1
+    D3 -.observes liveness.-> D2
+</div>
+
+<h4>Process supervision</h4>
+
+<p>Supervision in v0.1 is intentionally minimal. The watchdog does one thing — observe that the gateway and the scheduler are alive — and surfaces a failure when either is not. Failure surfacing is via stderr / syslog plus a non-zero exit on detected fault, so whichever process supervisor the host runs (systemd → journalctl, Docker → docker logs, runit, etc.) picks it up through its standard channel. The watchdog does not push alerts through the Telegram gateway: that would create a chicken-and-egg dependency where a dead gateway cannot be reported. If push-notification alerts become a v0.2 requirement, the watchdog gets its own outbound channel rather than borrowing the gateway's. Restart policy is the operator's responsibility — the watchdog reports, it does not act. Dream needs no supervision because it is not a daemon; cron decides when it runs and the file lock decides whether it can start. One-shot processes need no supervision because they are bounded and observable through their exit codes.</p>
+
+<h3 id="sec-2-4">2.4 Subsystem view</h3>
+
+<p>The subsystem view groups the 15 modules from §2.2 into five coherent subsystems. The grouping is driven by cohesion of responsibility, not by layer: a subsystem may span L3 runtime modules and the L2 / L1 components they exclusively use. The five subsystems become the DLD's chapter partitioning — each one gets its own chapter, sized to be designed and reviewed independently. Cross-subsystem coupling is explicit and goes through the data-access subsystem in almost every case, which keeps the rest of the partitioning tractable.</p>
+
+<h4>Subsystem catalog</h4>
+
+<table>
+  <thead>
+    <tr><th>Subsystem</th><th>Modules owned</th><th>Headline responsibility</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><b>S1 — Platform</b></td><td>Bootstrap, Watchdog (identity-binding management commands)</td><td>Bring a Typhoon instance into being (including the seed operator), manage canonical-user bindings, and keep daemons observable.</td></tr>
+    <tr><td><b>S2 — Channels &amp; dispatch</b> (use plane)</td><td>Telegram gateway, External-agent endpoints, Scheduler, Core, Signal recorder</td><td>Receive every "use" invocation through an adapter, dispatch the work, record one signal per invocation.</td></tr>
+    <tr><td><b>S3 — Self-growth</b></td><td>Dream cycle</td><td>Mine accumulated signals into memories and proposals on a scheduled batch.</td></tr>
+    <tr><td><b>S4 — Registry management</b></td><td>Tool manager (with forge validators), Soul manager</td><td>Move proposals through ratification into atomic registry / config mutations.</td></tr>
+    <tr><td><b>S5 — Data access</b></td><td>L2: Tool registry, Memory store, Signal store, Proposal queue, Config, Identity bindings<br/>L1: TursoDB / libSQL, Filesystem, LLM clients, Telegram client, Sandbox + path lint</td><td>Own all of Typhoon's data semantics (including the shared/per-user split and role lookup) and all interaction with external systems.</td></tr>
+  </tbody>
+</table>
+
+<h4>S1 — Platform</h4>
+<p>The platform subsystem covers everything required to stand a Typhoon instance up, identify its users, and keep its daemons running. Bootstrap is one-shot — schema migrations, seed config, seed the operator as the first canonical user (with operator role), optional cloud-replica link, idempotent across re-runs. The platform also owns the operator-facing identity-binding management commands (list bindings, revoke a binding, mint an onboarding invite), which read and write through S5's Identity bindings library. The watchdog is continuous, observing the two long-running daemons (gateway and scheduler) and emitting failures through stderr / syslog. The DLD chapter for S1 covers the migration scheme (versioned, additive-only), the seed inventory (including the operator seed shape), the cloud-replica linking handshake, the binding management command grammar, the binding-verification mechanics (claim tokens, expiry, nonce), the watchdog's probe interval and failure-detection criteria, and the alerting-output format.</p>
+
+<h4>S2 — Channels &amp; dispatch (use plane)</h4>
+<p>S2 is the entire use plane in one subsystem. It owns every path that brings external work into Typhoon (Telegram long-poll, external-agent one-shots, cron-fired entries), the core dispatcher that orchestrates that work, and the signal recorder that persists one signal per invocation. Two defining invariants are enforced here: "core is the only thing that drives the recorder," and "every invocation reaching core carries a resolved <code>canonical_user_id</code>." Gateways resolve identity via S5's Identity bindings before invoking core; the external-agent endpoints default to the operator. The DLD chapter for S2 covers the gateway protocol handling, the binding-resolution and onboarding flow for unbound peers, the agent loop's tool-dispatch sequence, the cron entry format and tick semantics, the external-agent endpoint contracts (input shape, exit codes, identity defaulting), the core's dispatch interface, and the recorder's write protocol (signal row tagged with <code>canonical_user_id</code>).</p>
+
+<h4>S3 — Self-growth</h4>
+<p>S3 is just the dream batch, but it is large and stands alone because of its scoring logic and its three-phase pipeline. Light, REM, and deep phases run sequentially; each emits structured outputs the next consumes. Dream reads from S5 (signal store, memory store, tool registry, existing proposals) and writes back through S5 (memory store, proposal queue) — it never calls into S2 or S4 directly. The file lock that makes dream a single-writer is part of this subsystem. The DLD chapter for S3 covers each phase's input/output contracts, the scoring formulas and weights, the LLM prompts for the deep phase, the soul-proposal generation rules, the stale-signal prune policy, and the cron-entry seeding.</p>
+
+<h4>S4 — Registry management</h4>
+<p>S4 owns the operator-driven advancement of proposals into the registry. Tool manager covers the unified <code>typhoon tool</code> namespace (proposal flow with embedded forge validators, plus full lifecycle operations on installed tools); every mutation gates on the operator role. Soul manager is the per-user flow for soul proposals — a user may approve their own, the operator may approve any — with atomic per-user config mutation on approval. Both managers query S5's Identity bindings for the role check, then compose against the proposal queue and the corresponding storage library (tool registry for one, config for the other), and both rely on the staging+rename atomicity pattern from §2.3 wherever a filesystem write is involved. The DLD chapter for S4 covers the proposal state-machine transitions, the validator implementations (sandbox tier check, path lint), the role-check policy at every subcommand, the operator-CLI command grammar and exit codes, the atomic-mutation transaction shapes, the lineage-and-history rules, the 3-strike rejection tracking (per pattern for cli proposals; per <code>(canonical_user_id, config_key)</code> for soul), and the promote-script (hand-written tool adoption) flow.</p>
+
+<h4>S5 — Data access</h4>
+<p>S5 is everything that knows about Typhoon's data model and everything that talks to external systems. The L2 libraries (tool registry, memory store, signal store, proposal queue, config, identity bindings) own data semantics — atomicity, retrieval bounds, success tagging, type validation, lineage rules, verified-binding semantics, the shared-vs-per-user data scoping, and role lookup. The L1 adapters (TursoDB / libSQL client with transaction primitives, filesystem ops, LLM clients for frontier and dream models, Telegram client, sandbox + path-lint helpers) own the protocols for talking to external systems. The L2 / L1 split inside this subsystem is the most important thing about it: domain semantics never leak into adapters; adapters never know about Typhoon-specific invariants. The DLD chapter for S5 covers the SQL schema (DDL — including the canonical-user table, binding table, and per-user vs system config split), each library's API surface (which APIs take <code>canonical_user_id</code> and which do not), the staging+rename pattern, transaction primitives, lock primitives, every adapter's external interface, and the swap-test criterion (replacing an adapter must not change anything above L1).</p>
+
+<h4>Subsystem dependencies</h4>
+
+<p>Almost every cross-subsystem dependency goes through S5. S2 and S4 produce mutations; S3 produces and consumes; S1 reads health. S5 is the integration point — that is the point of having a data-access subsystem.</p>
+
+<div class="mermaid">
+flowchart TB
+    S1[S1 — Platform<br/>Bootstrap, Watchdog]
+    S2[S2 — Channels &amp; Dispatch<br/>Gateway, Endpoints, Scheduler,<br/>Core, Recorder]
+    S3[S3 — Self-growth<br/>Dream cycle]
+    S4[S4 — Registry management<br/>Tool manager, Soul manager]
+    S5[S5 — Data access<br/>L2 libraries + L1 adapters]
+
+    S1 --> S5
+    S2 --> S5
+    S3 --> S5
+    S4 --> S5
+
+    S1 -.observes daemons.-> S2
+</div>
+
+<h4>Why this partitioning</h4>
+
+<p>Three properties make this set of subsystems suitable as DLD chapter boundaries.</p>
+
+<ol>
+  <li><strong>Each subsystem has a single headline responsibility</strong> that can be understood without referring to the others. Anyone reviewing the S3 chapter can do so without knowing the gateway protocol; anyone reviewing S2 can do so without knowing dream's scoring weights.</li>
+  <li><strong>Cross-subsystem coupling is bounded and explicit.</strong> S2 / S3 / S4 / S1 all depend on S5; S1 additionally observes S2's daemons; otherwise nothing crosses. This makes each chapter a small surface-area read.</li>
+  <li><strong>The runtime planes from §2.3 fall along these boundaries.</strong> S2 is the use plane in its entirety; S3, S4, and the operator-facing slice of S1 are management plane. The split this HLD treats as load-bearing remains visible at the DLD level rather than being smeared across chapters.</li>
+</ol>
+
+<h3 id="sec-2-5">2.5 Project layout (workspace, crates, cross-cutting concerns)</h3>
+
+<p>The conceptual architecture from §2.1–§2.4 maps directly to a Rust workspace whose crate boundaries are the layer rule and the subsystem boundaries. Cargo's dependency check then enforces the rules at compile time — a forbidden upward call doesn't compile because the crate it would import is not in the consumer's <code>Cargo.toml</code>. The architecture stops being aspirational and becomes mechanical.</p>
+
+<h4>Workspace layout</h4>
+
+<pre>typhoon/
+├── Cargo.toml                        # workspace manifest
+└── crates/
+    ├── typhoon/                      # binary entrypoint (L4): one thin handler per subcommand
+    │   └── src/
+    │       ├── main.rs               # clap dispatch
+    │       └── cli/                  # gateway.rs, cron.rs, dream.rs,
+    │                                 # tool.rs, soul.rs, watchdog.rs,
+    │                                 # signal.rs, memory.rs, init.rs,
+    │                                 # link.rs, sql.rs, config.rs
+    ├── typhoon-platform/             # S1 — Bootstrap, Watchdog
+    ├── typhoon-dispatch/             # S2 — Gateway, External-agent endpoints,
+    │                                 #      Scheduler, Core, Recorder
+    ├── typhoon-dream/                # S3 — Dream batch (light / REM / deep)
+    ├── typhoon-registry-mgmt/        # S4 — Tool manager + Soul manager
+    ├── typhoon-data/                 # S5 L2 — Tool registry, Memory store,
+    │                                 #         Signal store, Proposal queue, Config,
+    │                                 #         Identity bindings
+    ├── typhoon-adapters/             # S5 L1 — TursoDB / libSQL, Filesystem,
+    │                                 #         LLM clients, Telegram, Sandbox + path lint
+    ├── typhoon-foundation/           # L0 — error types, clock, ID gen, logging facade,
+    │                                 #      telemetry, tracing facade, panic hook,
+    │                                 #      canonical_user_id newtype, Role enum
+    └── typhoon-testkit/              # cross-cutting test fixtures, fakes, builders
+                                      # dev-dependency only</pre>
+
+<h4>Dependency map</h4>
+
+<p>Every crate's <code>[dependencies]</code> in its <code>Cargo.toml</code> matches this table exactly. Anything not listed here is forbidden by construction.</p>
+
+<table>
+  <thead><tr><th>Crate</th><th>Internal dependencies</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>typhoon</code> (binary)</td><td>platform, dispatch, dream, registry-mgmt, foundation</td><td>Subcommand handlers wire arguments to one subsystem entrypoint each. No domain logic.</td></tr>
+    <tr><td><code>typhoon-platform</code></td><td>data, dispatch (observe-only), foundation</td><td>Watchdog reads daemon liveness; bootstrap touches data only.</td></tr>
+    <tr><td><code>typhoon-dispatch</code></td><td>data, foundation</td><td>Use plane. Calls into S5 only through L2.</td></tr>
+    <tr><td><code>typhoon-dream</code></td><td>data, foundation</td><td>Standalone batch. Never depends on dispatch or registry-mgmt.</td></tr>
+    <tr><td><code>typhoon-registry-mgmt</code></td><td>data, foundation</td><td>Operator-driven mutation flows.</td></tr>
+    <tr><td><code>typhoon-data</code></td><td>adapters, foundation</td><td>L2 only — domain semantics. Schema knowledge lives here.</td></tr>
+    <tr><td><code>typhoon-adapters</code></td><td>foundation</td><td>L1 only — external-system clients (libsql, reqwest, tokio, etc.).</td></tr>
+    <tr><td><code>typhoon-foundation</code></td><td>—</td><td>No internal deps. Only the cross-cutting primitives below.</td></tr>
+    <tr><td><code>typhoon-testkit</code></td><td>foundation, data, adapters (dev-only fakes)</td><td>Used as <code>[dev-dependencies]</code> by every other crate's tests. Never shipped.</td></tr>
+  </tbody>
+</table>
+
+<p>Five guarantees fall out of this:</p>
+<ol>
+  <li><strong>Layer rule = compile-time.</strong> Dispatch cannot reach an adapter directly because <code>typhoon-adapters</code> is not in <code>typhoon-dispatch</code>'s <code>Cargo.toml</code>. Adding it would be a code-review-visible change to the manifest, not an accidental import.</li>
+  <li><strong>Subsystem boundary = compile-time.</strong> Registry-mgmt cannot accidentally call into dispatch for the same reason.</li>
+  <li><strong>No circular dependencies possible.</strong> Cargo refuses to compile cycles, so the layered DAG is mechanically guaranteed.</li>
+  <li><strong>Subsystem-scoped testing.</strong> <code>cargo test -p typhoon-dream</code> runs only S3 and its real deps. No false coupling to dispatch.</li>
+  <li><strong>DLD chapter ↔ crate is 1:1.</strong> Reviewers find code where the design said it would be.</li>
+</ol>
+
+<h4>Cross-cutting concerns</h4>
+
+<p>Cross-cutting concerns are everything every crate may need but nothing should reimplement. They have one of three homes; each home has a strict rule.</p>
+
+<table>
+  <thead><tr><th>Concern</th><th>Home</th><th>Rule</th></tr></thead>
+  <tbody>
+    <tr><td><b>Error types</b> (one root error enum per subsystem; conversions to/from)</td><td><code>typhoon-foundation</code> defines the trait + common variants; subsystem crates define their own thin enum that <code>From</code>-converts</td><td>No <code>anyhow</code> in library crates; only the binary may use <code>anyhow</code>. Subsystem errors carry context, not just text.</td></tr>
+    <tr><td><b>Clock / time</b> (now, sleep, deadline)</td><td><code>typhoon-foundation::clock</code> — trait + production impl + test impl in <code>typhoon-testkit</code></td><td>No direct calls to <code>std::time::SystemTime::now</code> or <code>tokio::time::sleep</code> outside foundation. Everything injectable.</td></tr>
+    <tr><td><b>ID generation</b> (proposal IDs, run IDs, signal IDs, idempotency keys, <code>canonical_user_id</code>)</td><td><code>typhoon-foundation::ids</code></td><td>One generator type per ID kind (newtype). No raw <code>Uuid</code> at API surfaces. <code>canonical_user_id</code> is a newtype to prevent string mix-ups across module boundaries.</td></tr>
+    <tr><td><b>Identity types</b> (<code>canonical_user_id</code>, <code>Role</code> enum, binding tuple)</td><td><code>typhoon-foundation</code> defines the types; <code>typhoon-data</code> defines the binding library; <code>typhoon-dispatch</code> resolves bindings at gateway / endpoint entry; <code>typhoon-registry-mgmt</code> checks role at every mutation</td><td>Authorization is checked at boundaries (gateway, endpoint, management subcommand), not deep inside libraries; libraries trust the <code>canonical_user_id</code> they receive.</td></tr>
+    <tr><td><b>Logging</b> (structured, level-controlled)</td><td><code>typhoon-foundation</code> re-exports a logging facade (e.g., <code>tracing</code>); only the binary configures the subscriber</td><td>Library crates emit only; never configure. Log fields use a small fixed vocabulary (subsystem, run_id, signal_id, …).</td></tr>
+    <tr><td><b>Tracing / spans</b> (request IDs, dispatch chains)</td><td>Same — <code>tracing</code> spans, started at L4 entry and at core dispatch</td><td>Every signal carries the originating span ID for post-hoc correlation.</td></tr>
+    <tr><td><b>Telemetry / metrics</b> (counters, gauges, histograms)</td><td><code>typhoon-foundation::metrics</code> — façade only</td><td>Library crates increment counters via the façade; the binary chooses an exporter (or none, in v0.1).</td></tr>
+    <tr><td><b>Feature flags / config knobs</b></td><td>Already in S5 Config (<code>typhoon-data::config</code>); foundation defines no flags</td><td>All knobs live in the config table. No compile-time cargo features for behaviour, only for optional adapter integrations.</td></tr>
+    <tr><td><b>Panic hook + crash reporting</b></td><td><code>typhoon-foundation::panic_hook</code></td><td>Installed once by the binary at startup. Logs the panic with the run / span ID before propagating.</td></tr>
+    <tr><td><b>Async runtime</b> (Tokio)</td><td>Started by the binary; passed via handles or context</td><td>Library crates do not call <code>tokio::main</code>. Async-runtime choice is binary-level.</td></tr>
+    <tr><td><b>Test fixtures, fakes, builders</b></td><td><code>typhoon-testkit</code> — fake clock, in-memory adapter fakes, proposal builders, signal-chain builders</td><td>Production crates never depend on testkit; testkit is <code>[dev-dependencies]</code> everywhere it's used.</td></tr>
+    <tr><td><b>Code style, lints, formatting</b></td><td>Workspace-level <code>rustfmt.toml</code>, <code>clippy.toml</code>, deny-by-default lint set in <code>Cargo.toml</code></td><td>Same rules apply to every crate; no per-crate exceptions without a review-visible <code>#[allow]</code>.</td></tr>
+  </tbody>
+</table>
+
+<p>Three rules govern when something becomes cross-cutting versus subsystem-local. <strong>(a)</strong> If two or more subsystem crates need it identically, it goes to <code>typhoon-foundation</code>. <strong>(b)</strong> If only one subsystem needs it, it stays inside that subsystem's crate. <strong>(c)</strong> If it touches an external system, it lives in <code>typhoon-adapters</code> regardless of how many subsystems consume it. The data-access layer (<code>typhoon-data</code>) is the only crate that bridges domain semantics with adapters; foundation never touches adapters.</p>
+
+<h4>Cross-cutting that this layout deliberately rejects</h4>
+
+<p>A few things commonly handled cross-cuttingly are not, on purpose. Dependency-injection containers — Rust's type system and explicit constructors are sufficient at this scale; a DI framework would obscure dependencies the layer rule wants visible. Aspect-oriented logging via macros that wrap every function — too magical; explicit <code>tracing::instrument</code> at module entry points stays readable. A monolithic <code>shared</code> or <code>common</code> crate that everyone imports — exactly the anti-pattern the layered split is meant to prevent; foundation stays narrow on purpose.</p>
+
+<h2 id="sec-3">3. State diagrams</h2>
+<p>Three state machines survive in v0.1 and are made fully explicit here: the tool proposal status, the tool lifecycle, and the soul proposal status. Each diagram is the authoritative answer for "is this transition legal?" — implementations must reject any transition not drawn. There are no skill state machines; that vocabulary was deliberately removed (see PLAN §7 invariant 5).</p>
+
+<p>Notation: rectangular states are stored values; the trailing <code>[*]</code> is process termination, not a value. Transition labels name the actor and the action. Guard conditions are written in square brackets. Side effects required to be in the same atomic transaction as the transition are written below the label in italics.</p>
+
+<h3 id="sec-3-1">3.1 Tool proposal status (<code>cli_proposals.status</code>)</h3>
+
+<p>The tool proposal moves through a small linear state space. Approval emits a registry mutation that is atomic with the status flip (the staging+rename pattern from §2.3 spans this transaction). Rejection is the only branch that can recur; after the third rejection on the same pattern, dream is forbidden from drafting another proposal that originates from the same signal cluster.</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> awaiting_forge : dream creates proposal
+    awaiting_forge --> awaiting_user : tool propose submit [validators pass]
+    awaiting_forge --> awaiting_forge : tool propose submit [path lint fails]
+    awaiting_user --> approved : tool propose approve
+    awaiting_user --> rejected : tool propose reject
+    approved --> [*]
+    rejected --> [*] : rejection_count < 3
+    rejected --> [*] : rejection_count = 3 (pattern blacklisted)
+
+    note right of awaiting_user
+        On submit: sandbox tier-claim check
+        and path-lint run; tier silently
+        downgraded if claim fails.
+    end note
+
+    note right of approved
+        Atomic transaction:
+        registry insert + binary install
+        (stage then rename) +
+        seed memory + status flip.
+    end note
+
+    note left of rejected
+        Blacklist is enforced as a
+        dream-side guard (count check
+        before drafting), not as a state.
+    end note
+</div>
+
+<p><strong>Invariants enforced by this machine:</strong></p>
+<ul>
+  <li>The set <code>{awaiting_forge, awaiting_user, approved, rejected}</code> is total — no NULL, no other values. SQL CHECK is defense-in-depth.</li>
+  <li>The transition <code>awaiting_user → approved</code> is wrapped in <code>BEGIN IMMEDIATE … COMMIT</code> together with the registry insert, the seed-memory write, and (for replacements) the predecessor archival.</li>
+  <li>The 3-strike rule is enforced by checking <code>SUM(rejection_count)</code> for the originating pattern before dream creates a new proposal — not by a state on this machine. The blacklist is a guard on dream, not a status here.</li>
+  <li>A path-lint failure on submit does not advance state; the proposal stays <code>awaiting_forge</code> and the operator submits again with corrected source.</li>
+  <li>A sandbox tier-claim failure on submit advances state and silently downgrades the claimed tier — the operator reviews the source under stricter intensity.</li>
+</ul>
+
+<h3 id="sec-3-2">3.2 Tool lifecycle</h3>
+
+<p>Once a proposal is approved, the tool itself enters a lifecycle covering installation, deactivation, replacement, deprecation, and removal. Every transition that touches a binary on disk uses the staging+rename pattern; every transition that affects more than one row is a single transaction.</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> active : tool propose approve
+    active --> disabled : tool disable
+    disabled --> active : tool enable
+    active --> superseded : tool propose approve [replacement]
+    active --> active : tool rollback
+    active --> deleted : tool delete
+    disabled --> deleted : tool delete
+    superseded --> deleted : tool delete
+    deleted --> [*] : tool purge
+
+    note right of active
+        Steady state. Use and success
+        counters increment here.
+        Dream may propose replacement
+        (rising error rate) or
+        deprecation (prolonged disuse).
+        tool rollback is a self-loop:
+        active version swaps with
+        a predecessor from .history/.
+    end note
+
+    note right of superseded
+        Atomic swap on approve:
+        predecessor moves to .history/,
+        new binary installed via
+        stage-then-rename, lineage
+        and seed memory updated.
+    end note
+
+    note left of deleted
+        Row removed, binary archived
+        to .history/. purge is the
+        irreversible terminal step.
+    end note
+
+    note right of [*]
+        Staging artifacts in
+        ~/.typhoon/bin/.staging/ may
+        persist if a process crashes
+        between COMMIT and rename.
+        The tool sync janitor sweeps
+        them out of band; they are
+        invisible to this state machine.
+    end note
+</div>
+
+<p><strong>Invariants enforced by this machine:</strong></p>
+<ul>
+  <li>Every transition that involves a filesystem operation is part of the same transaction as the registry mutation, via the staging+rename atomicity pattern from §2.3.</li>
+  <li><code>superseded</code> is reachable only via approval of a proposal carrying <code>replaces:&lt;name&gt;</code>; same pattern, no auto-supersede.</li>
+  <li><code>tool rollback</code> stays in <code>active</code> by definition — it swaps which version is the active binary, the state of the tool entity does not change.</li>
+  <li><code>deleted</code> retains the registry row and the archived binary; <code>purge</code> is the irreversible terminal transition.</li>
+  <li><code>tool promote</code> (operator adopts a hand-written script with no origin proposal) enters this machine at <code>active</code> directly, bypassing §3.1; it is recorded as <code>approved_by='user'</code> with no proposal pointer.</li>
+</ul>
+
+<h3 id="sec-3-3">3.3 Soul proposal status (<code>soul_proposals.status</code>)</h3>
+
+<p>Soul proposals govern per-user config-row mutations originating from dream. The shape of the machine is the same as §3.1's tail: a single approval branch, a recurring rejection branch with the same 3-strike rule (here keyed per <code>(canonical_user_id, config_key)</code> — the rule is per user, so one user rejecting a soul change three times does not blacklist that key for other users). There is no forge step because the artifact is a config value, not a binary; therefore no <code>awaiting_forge</code>.</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> pending : dream creates proposal
+    pending --> approved : soul approve
+    pending --> rejected : soul reject
+    approved --> [*]
+    rejected --> [*] : rejection_count < 3
+    rejected --> [*] : rejection_count = 3 (key blacklisted)
+
+    note right of approved
+        Atomic transaction:
+        config row update +
+        status flip in one step.
+    end note
+
+    note left of rejected
+        Blacklist is per
+        (canonical_user_id, config_key)
+        and enforced as a dream-side
+        guard, not a state.
+    end note
+</div>
+
+<p><strong>Invariants enforced by this machine:</strong></p>
+<ul>
+  <li>The set <code>{pending, approved, rejected}</code> is total — no NULL, no other values.</li>
+  <li>The transition <code>pending → approved</code> is wrapped in <code>BEGIN IMMEDIATE … COMMIT</code> together with the <code>config</code> table update — the value cannot change without the proposal closing in the same step, and the proposal cannot close without the value changing.</li>
+  <li>The 3-strike rule is enforced by checking <code>SUM(rejection_count)</code> for the same <code>config_key</code> before dream drafts a new soul proposal. As in §3.1, the blacklist is a guard on dream, not a state here.</li>
+  <li>There is no <code>awaiting_forge</code> equivalent: soul proposals carry the proposed value directly. Approval is one human gate, not two.</li>
+</ul>
+
+<h3 id="sec-3-cross">Cross-machine guarantees</h3>
+
+<p>Three guarantees span all three machines and belong here rather than in any one:</p>
+<ol>
+  <li><strong>Atomicity boundaries are state transitions.</strong> Every multi-step state change in §3.1 / §3.2 / §3.3 is one SQL transaction. Crashes between transitions leave the system in a defined state; crashes during a transition roll back to the prior state.</li>
+  <li><strong>3-strike rules are dream-side guards, not states.</strong> The proposal machines have <code>rejected</code> as a normal terminal state; the "blacklist" is a count-based guard inside dream, checked before drafting. This keeps the state machines small and lets the operator reset a blacklist by clearing rejection counts in <code>config</code> if needed.</li>
+  <li><strong>No state machine carries an "in flight" or "processing" intermediate state.</strong> Transitions are instantaneous from the database's point of view (one transaction). If a process holding a transient lock dies, the lock is released and the source state stands.</li>
+</ol>
+
+</body>
+</html>

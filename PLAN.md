@@ -270,7 +270,7 @@ These apply throughout the project. Each phase must not violate them. See `CLAUD
 5. **Skills are not a concept.** No `skills`, `skill_triggers`, or `skill_proposals` tables. No `typhoon skill *` commands. CLIs are the only artifact.
 6. **Typhoon does not write code.** Forge writes code; Typhoon writes feature requests and catalogs deliveries.
 7. **Typhoon does not verify correctness.** Platform-contract checks (tier honesty, portable paths) are the only checks Typhoon performs. Correctness is the forge's responsibility, accepted or rejected by the operator.
-8. **One instance = one TursoDB database.** No multi-instance sync.
+8. **One instance = one TursoDB database, serving multiple users.** One Typhoon instance owns one TursoDB database; the optional cloud replica is for read access from other devices, not for running a second writer instance against the same database. The single DB serves multiple canonical users (one operator seeded at init, plus users who join via channel binding); per-user data (signals, memory, per-user config slice) is scoped by `canonical_user_id`; tools are shared across all users; the operator role gates registry and tool mutations. Multi-instance sync is not supported.
 
 ---
 
