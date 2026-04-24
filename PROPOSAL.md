@@ -38,10 +38,10 @@ No skill registry. No system-prompt catalog. No agent-side install.
 
 **Typhoon is language-neutral.** It doesn't write CLI source code — it writes requests. The operator (via the forge) picks whatever language fits (bash, Python, Rust, Deno, Go…) subject only to "runs on the Linux/Mac host that hosts Typhoon." Typhoon catalogs, installs, monitors health, and manages lifecycle — it never synthesizes.
 
-**Forge is manual in v0.1.** Typhoon does not invoke the forge automatically. The operator reads the request, does the forge work externally, and submits the resulting source back via `typhoon propose submit`. Automating the forge invocation is deferred until the full manual loop is validated.
+**Forge is manual in v0.1.** Typhoon does not invoke the forge automatically. The operator reads the request, does the forge work externally, and submits the resulting source back via `typhoon tool propose submit`. Automating the forge invocation is deferred until the full manual loop is validated.
 
 ```
- User works with Typhoon (Telegram primary, CLI REPL for dev)
+ User works with Typhoon (Telegram primary; external-agent CLI for ops)
                        │
                        ▼
   Every tool call, correction, outcome → dream_signals (SQL rows)
@@ -59,7 +59,7 @@ No skill registry. No system-prompt catalog. No agent-side install.
                        ▼
     Operator forges the request externally (feeds it to Claude Code CLI
     or similar, iterates until the forge's own tests pass) and submits:
-    `typhoon propose submit <id> --source <file> [--tests <file>]`
+    `typhoon tool propose submit <id> --source <file> [--tests <file>]`
     Typhoon attaches source + forge's correctness argument, runs the
     platform-contract sandbox check (is the tier claim honored?) and
     the hardcoded-path lint. status → awaiting_user.
@@ -126,7 +126,7 @@ Dream checks existing CLIs before drafting a new one — by description embeddin
 
 **Replacements never auto-approve, even pure tier.** A pure-function rewrite still changes behavior downstream callers depend on — silently swapping it would break the user's habits.
 
-On approval of a replacement, the old binary moves to `~/.typhoon/bin/.history/<name>.<timestamp>`. `typhoon cli rollback <name>` reverts. The whole swap is atomic — backup, replace, registry update, seed memory update all succeed together or none do.
+On approval of a replacement, the old binary moves to `~/.typhoon/bin/.history/<name>.<timestamp>`. `typhoon tool rollback <name>` reverts. The whole swap is atomic — backup, replace, registry update, seed memory update all succeed together or none do.
 
 ### Human in the loop
 
@@ -171,7 +171,7 @@ A CLI has one of these states at any time:
 | `superseded` | Replaced by a newer CLI; source preserved in `.history/`, lineage recorded |
 | `deleted` | Registry row removed; binary archived to `.history/` unless hard-purged |
 
-Proposals have their own state machine: `awaiting_forge → awaiting_user → approved | rejected`. Request lands first (no code); the operator forges externally and submits the source via `typhoon propose submit`, which attaches source + forge's correctness argument, runs the sandbox tier-claim check and the hardcoded-path lint, and flips to awaiting_user. The operator then reviews the delivery against the request and approves or rejects.
+Proposals have their own state machine: `awaiting_forge → awaiting_user → approved | rejected`. Request lands first (no code); the operator forges externally and submits the source via `typhoon tool propose submit`, which attaches source + forge's correctness argument, runs the sandbox tier-claim check and the hardcoded-path lint, and flips to awaiting_user. The operator then reviews the delivery against the request and approves or rejects.
 
 ### Lifecycle
 
@@ -215,24 +215,24 @@ Each registry row holds enough to answer any lifecycle question:
 ### User commands
 
 ```bash
-typhoon cli list                          # active CLIs
-typhoon cli list --kind pure              # filter by tier
-typhoon cli list --unused --since 30d     # stale candidates
-typhoon cli list --all                    # include disabled + superseded
+typhoon tool list                          # active CLIs
+typhoon tool list --kind pure              # filter by tier
+typhoon tool list --unused --since 30d     # stale candidates
+typhoon tool list --all                    # include disabled + superseded
 
-typhoon cli show <name>                   # source, stats, lineage, origin signals
-typhoon cli diff <name>                   # compare with previous version
-typhoon cli history <name>                # full lineage chain
+typhoon tool show <name>                   # source, stats, lineage, origin signals
+typhoon tool diff <name>                   # compare with previous version
+typhoon tool history <name>                # full lineage chain
 
-typhoon cli disable <name>                # off PATH, keep registry row
-typhoon cli enable <name>                 # back on PATH
-typhoon cli rollback <name>               # revert to previous version from .history/
-typhoon cli delete <name>                 # remove registry row, archive binary
-typhoon cli purge <name>                  # hard delete, including .history/
+typhoon tool disable <name>                # off PATH, keep registry row
+typhoon tool enable <name>                 # back on PATH
+typhoon tool rollback <name>               # revert to previous version from .history/
+typhoon tool delete <name>                 # remove registry row, archive binary
+typhoon tool purge <name>                  # hard delete, including .history/
 
-typhoon cli promote <path>                # adopt a hand-written script into the registry
-typhoon cli check-deps                    # scan external_deps across all CLIs
-typhoon cli sync                          # rebuild binaries from registry source (second machine)
+typhoon tool promote <path>                # adopt a hand-written script into the registry
+typhoon tool check-deps                    # scan external_deps across all CLIs
+typhoon tool sync                          # rebuild binaries from registry source (second machine)
 ```
 
 `promote` is the escape hatch: user writes a script themselves and wants Typhoon to track it. Runs the classification + safety check, adds it with `approved_by='user'` and no origin proposal.
@@ -253,14 +253,14 @@ Turso cloud replica (via `typhoon link`) syncs the **registry** — rows in the 
 
 Re-materialization depends on what the forge produced:
 
-- **Script languages** (bash, Python, Deno, Node, Ruby…): `typhoon cli sync` writes the source back to `~/.typhoon/bin/`, `chmod +x`, re-runs replay tests. Near-instant.
-- **Compiled languages** (Rust, Go…): the registry carries the actual source that was forged on machine A. `typhoon cli sync` runs the local toolchain (`cargo build`, `go build`) on that exact source to produce the binary — **no forge re-invocation**, no LLM variability. Background, priority-queued by `use_count`.
+- **Script languages** (bash, Python, Deno, Node, Ruby…): `typhoon tool sync` writes the source back to `~/.typhoon/bin/`, `chmod +x`, re-runs replay tests. Near-instant.
+- **Compiled languages** (Rust, Go…): the registry carries the actual source that was forged on machine A. `typhoon tool sync` runs the local toolchain (`cargo build`, `go build`) on that exact source to produce the binary — **no forge re-invocation**, no LLM variability. Background, priority-queued by `use_count`.
 
 The registry always stores the spec + forged source. Compiled binaries themselves aren't synced.
 
 ### External dependencies
 
-A CLI that shells out to `jq` or `gh` is portable only where those exist. Dream records `external_deps` during the deep phase by grepping the generated source. `typhoon cli show` lists them; `typhoon cli check-deps` scans the whole registry and flags missing tools.
+A CLI that shells out to `jq` or `gh` is portable only where those exist. Dream records `external_deps` during the deep phase by grepping the generated source. `typhoon tool show` lists them; `typhoon tool check-deps` scans the whole registry and flags missing tools.
 
 **Install gates on `check-deps`**: missing dependencies block install rather than leaving a broken binary on `PATH`. The user installs the tool, rejects the proposal, or edits the source to remove the dependency.
 
@@ -300,7 +300,7 @@ Hermes forges skill documents. Typhoon runs the same loop with **CLIs as the out
 |---|---|---|
 | Typhoon runtime | Rust 2021 | Single binary, predictable latency, good WASM story later |
 | DB | TursoDB / libSQL | Embedded, SQL, optional cloud replica for multi-device |
-| Channel | Telegram (primary), local REPL (dev) | Telegram = always-on + multi-device free |
+| Channel | Telegram (primary); external-agent CLI (Claude Code, Cursor, Codex…) for the operator | Telegram = always-on + multi-device free; external-agent path uses one-shot subcommands, no REPL needed |
 | Online LLM (agent) | Cloud frontier (Claude Sonnet 4.6 / GPT-5 / GLM 5.1) | Quality per turn matters |
 | Dream LLM (spec writer) | Cloud cheap batch model (Haiku 4.5 / MiniMax M2.7 / similar) | Cheap, batch, overnight; only writes specs, not code |
 | Forge (code synthesizer) | **Operator-driven** in v0.1 (external tooling + Claude Code CLI as reference) | Not automated by Typhoon yet; operator handles the synthesis, quality iteration, and retries. Automation comes after the manual loop is validated. |
@@ -316,19 +316,19 @@ Typhoon itself: no YAML, no JSON config, no Python, no Node. Generated CLIs: wha
 ```bash
 typhoon init                           # local DB + seed, offline
 typhoon link --url URL --token TOK     # optional: add Turso cloud replica
-typhoon run                            # local REPL (dev/debug)
-typhoon serve --telegram               # Telegram bot daemon (primary channel)
+typhoon gateway --telegram             # Telegram bot daemon (primary channel)
 
 typhoon dream [--catchup]              # manual dream cycle (writes specs)
 typhoon cron                           # scheduler daemon
 
-typhoon propose list [--awaiting-forge|--awaiting-user]   # CLI proposals
-typhoon propose show <id>                                 # spec + replay inputs
-typhoon propose submit <id> --source <file>               # attach operator-forged source,
+typhoon tool propose list [--awaiting-forge|--awaiting-user]   # CLI proposals
+typhoon tool propose show <id>                                 # spec + replay inputs
+typhoon tool propose submit <id> --source <file>               # attach operator-forged source,
                                                           # run replay tests + tier verify
-typhoon propose approve|edit|reject <id>                  # resolve once awaiting_user
-typhoon cli …                                             # forged CLI management (see §4)
+typhoon tool propose approve|edit|reject <id>             # resolve once awaiting_user
+typhoon tool list|show|disable|enable|rollback|delete|purge|promote|sync|check-deps  # lifecycle (see §4)
 typhoon soul list|show|approve|reject                     # personality/config proposals
+typhoon signal record / typhoon memory query              # external-agent sidecar one-shots
 
 typhoon config get|set|list
 typhoon sql "<SELECT ...>"             # debug, read-only

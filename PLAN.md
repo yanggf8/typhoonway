@@ -14,11 +14,11 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - TursoDB (operator-provided account) as the sole state store
 - Schema migrations + seed, both run at `typhoon init`
 - Config CRUD with type validation, read-only `typhoon sql`
-- REPL channel (`typhoon run`) for development and shakedown
+- External-agent endpoints (`typhoon signal record`, `typhoon memory query`) — agent-invoked sidecar one-shots; the same path covers development shakedown via shell scripts
 - Signal capture: tool calls, corrections, outcomes, session boundaries, success tagging
 - Dream cycle (light / REM / deep) — writes **feature requests** (not specs), not code
 - Memory extraction (mem0-style) inside the dream cycle; bounded retrieval (Top-K + similarity)
-- Operator hand-off: `typhoon propose submit <id> --source <file> [--tests <file>]`
+- Operator hand-off: `typhoon tool propose submit <id> --source <file> [--tests <file>]`
 - Platform-contract sandbox check (tier-claim honesty) — Linux primary
 - Hardcoded-path lint (cross-platform, regex)
 - Atomic approve / install / rollback via `.history/`
@@ -27,7 +27,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - 3-strike rejection tracking for both patterns and replacements
 - Soul proposals for config changes (always require approval)
 - Cron scheduler (`typhoon cron`) with `--catchup`
-- Telegram channel (`typhoon serve --telegram`) — primary user interface
+- Telegram channel (`typhoon gateway --telegram`) — primary user interface
 - Observability keepers: `typhoon health`, `typhoon dream stats`, per-CLI health metrics
 
 ### 1.2 Out of scope (v0.1)
@@ -60,16 +60,16 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W2 | TursoDB client, migrations, seed (needs URL + token at init) | W1 | `typhoon init` creates schema + seed rows | M |
 | W3 | `config get / set / list`, type validation (`string/int/float/bool/cron`) | W2 | Config CRUD with CHECK enforcement | S |
 | W4 | `typhoon sql` — SELECT-only guard | W2 | SELECT works; writes rejected | S |
-| W5 | REPL loop, tool-call interception, session model | W2 | Hand-run session produces `dream_signals` rows | M |
+| W5 | External-agent endpoints (`typhoon signal record`, `typhoon memory query`), session model, tool-call signal capture | W2 | Hand-run shell script produces `dream_signals` rows via the endpoints | M |
 | W6 | Success tagging (exit 0 + no next-turn correction) | W5 | Signals carry `success` flag correctly | S |
 | W7 | Stale-signal prune (7d) + dream run file lock | W5 | Re-running dream is safe; old signals cleaned | S |
 | W8 | Dream LLM client (cheap batch model), `dream_runs` logging | W5 | Dream can make LLM calls; runs logged | M |
 | W9 | Memory extraction (mem0-style) inside dream | W8 | `memories` table populated from signals | M |
-| W10 | Bounded retrieval (Top-K + similarity + scope) | W9 | REPL next-session shows relevant memories within budget | M |
+| W10 | Bounded retrieval (Top-K + similarity + scope) | W9 | `typhoon memory query` next-session shows relevant memories within budget | M |
 | W11 | REM phase — cluster successful chains, detect repeats, collision check | W8, W6 | Clusters emerge from seeded signals | M |
 | W12 | DEEP phase — write feature request (description / interface / acceptance criteria / out-of-scope / tier claim / evidence / ROI) | W11 | `awaiting_forge` proposal row appears | L |
 | W13 | Soul proposal flow | W8 | Config changes routed through approval queue | S |
-| W14 | `typhoon propose submit <id> --source <file> [--tests <file>]` | W12 | Operator can hand source back | M |
+| W14 | `typhoon tool propose submit <id> --source <file> [--tests <file>]` | W12 | Operator can hand source back | M |
 | W15 | Platform-contract sandbox check (Linux bwrap) | W14 | Pure-tier claim verified under sandbox | M |
 | W16 | Hardcoded-path lint | W14 | Obvious absolute paths rejected | S |
 | W17 | Atomic approve (binary + registry + seed memory in one tx) | W14, W15, W16 | Approve is all-or-nothing | M |
@@ -77,8 +77,8 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W19 | Replacement flow + `.history/` archival + atomic swap | W17 | Replacement approval swaps cleanly | M |
 | W20 | 3-strike rejection tracking (patterns + replacements) | W12, W19 | Dream stops re-proposing rejected patterns | S |
 | W21 | Cron scheduler (`typhoon cron`) + `--catchup` | W12 | Nightly dream fires; catchup handles >25h gap | S |
-| W22 | Telegram channel (`typhoon serve --telegram`) | W10, W6 | Real user interaction lands in signals | L |
-| W23 | Keepers — `typhoon health`, `typhoon dream stats`, CLI health metrics in `typhoon cli show` | W21 | Observability wired | M |
+| W22 | Telegram channel (`typhoon gateway --telegram`) | W10, W6 | Real user interaction lands in signals | L |
+| W23 | Keepers — `typhoon health`, `typhoon dream stats`, CLI health metrics in `typhoon tool show` | W21 | Observability wired | M |
 | W24 | Test harness for all TC-* cases — runnable from one command | W18, W22 | `make test` runs the whole suite | M |
 
 ### 2.2 Critical path
@@ -114,7 +114,7 @@ Runtime costs (post-ship), not build costs. Build cost is operator time measured
 | Lane | Model class | Work | Expected cost (single-user) |
 |---|---|---|---|
 | Dream (batch, overnight) | Cheap batch (e.g. Haiku 4.5, MiniMax M2.7) | 1 run/night × memory extraction + clustering + feature-request drafting | **$3–7 / month** |
-| Online (Telegram + REPL) | Frontier (Claude Sonnet 4.6, GPT-5, GLM 5.1) | Pay-per-turn, ~20–100 turns/day | **$10–40 / month** |
+| Online (Telegram + external-agent) | Frontier (Claude Sonnet 4.6, GPT-5, GLM 5.1) | Pay-per-turn on Telegram path; external-agent path uses the agent's own LLM bill | **$10–40 / month (Telegram path only)** |
 
 **Alert threshold**: if monthly LLM spend exceeds $75 in a single-user workload, investigate. Likely causes: dream retries on LLM errors, runaway memory retrieval injection, online-LLM tool-call loops.
 
@@ -164,10 +164,10 @@ Each test case is a command (or short script) with an observable pass criterion.
 
 | ID | What runs | Pass criterion |
 |---|---|---|
-| TC-M2-01 | Hand-run REPL session issuing one tool call | `dream_signals` has ≥ 1 row with correct `session_id`, `source='tool_call'`, non-empty snippet |
+| TC-M2-01 | Shell script invokes `typhoon signal record` once with a synthetic tool call | `dream_signals` has ≥ 1 row with correct `session_id`, `source='tool_call'`, non-empty snippet |
 | TC-M2-02 | Tool call exits 0, next user turn is non-correction | Resulting signal chain tagged `success=1` |
 | TC-M2-03 | Tool call exits 0, next user turn is "no, do X instead" | Signal chain tagged `success=0` |
-| TC-M2-04 | Start two separate REPL invocations | Signals from each carry distinct `session_id` |
+| TC-M2-04 | Two shell scripts each invoke `typhoon signal record` with distinct session IDs | Signals from each carry distinct `session_id` |
 | TC-M2-05 | Seed a signal dated 8 days ago, run dream | Signal deleted from `dream_signals` |
 
 ### 5.3 M3 — Dream has a brain
@@ -175,7 +175,7 @@ Each test case is a command (or short script) with an observable pass criterion.
 | ID | What runs | Pass criterion |
 |---|---|---|
 | TC-M3-01 | Seed 3 signal chains mentioning "deploy to preview"; run `typhoon dream` | `memories` table has ≥ 1 row referencing that concept |
-| TC-M3-02 | Next REPL session, user says "how do I deploy?" | Response context includes that memory |
+| TC-M3-02 | Subsequent `typhoon memory query "how do I deploy?"` | Returned context includes that memory |
 | TC-M3-03 | Seed unrelated memories; query unrelated topic | Retrieved memory count ≤ `retrieval.top_k` (no overflow) |
 | TC-M3-04 | Query with similarity below threshold | No memories retrieved |
 | TC-M3-05 | Seed 100 memories; issue a vague query that matches many | Total tokens of retrieved memories ≤ `retrieval.max_tokens`; Top-K not exceeded regardless of match count |
@@ -195,17 +195,17 @@ Each test case is a command (or short script) with an observable pass criterion.
 
 | ID | What runs | Pass criterion |
 |---|---|---|
-| TC-M5-01 | `typhoon propose submit <id> --source cli.sh --tests test.sh` | Proposal flips `awaiting_forge → awaiting_user` |
+| TC-M5-01 | `typhoon tool propose submit <id> --source cli.sh --tests test.sh` | Proposal flips `awaiting_forge → awaiting_user` |
 | TC-M5-02 | Submit source claiming `pure` that opens a socket | Sandbox check fails; proposal tier downgraded to `read` or `mutate`; stays `awaiting_user` |
 | TC-M5-03 | Submit source containing `/home/yanggf/project` | Exit ≠ 0; lint rejects hardcoded path |
-| TC-M5-04 | `typhoon propose approve <id>` on clean proposal | Binary in `~/.typhoon/bin/<name>`; `cli_artifacts` row; seed memory written — all in one transaction |
+| TC-M5-04 | `typhoon tool propose approve <id>` on clean proposal | Binary in `~/.typhoon/bin/<name>`; `cli_artifacts` row; seed memory written — all in one transaction |
 | TC-M5-05 | Approve where binary write fails (inject fault) | No partial state: no registry row, no memory, no binary |
-| TC-M5-06 | `typhoon cli disable foo` | Binary removed from PATH; registry row retained with `status='disabled'` |
-| TC-M5-07 | `typhoon cli rollback foo` after replacement | Previous version restored from `.history/`; current version archived |
+| TC-M5-06 | `typhoon tool disable foo` | Binary removed from PATH; registry row retained with `status='disabled'` |
+| TC-M5-07 | `typhoon tool rollback foo` after replacement | Previous version restored from `.history/`; current version archived |
 | TC-M5-08 | Approve replacement proposal | Old binary → `.history/<name>.<ts>`; new binary active; registry lineage updated; all atomic |
 | TC-M5-09 | Reject same pattern 3 times | Fourth dream run produces no proposal for that pattern |
-| TC-M5-10 | `typhoon cli promote /usr/local/bin/myscript` | Registry row created with `approved_by='user'`, no origin proposal |
-| TC-M5-11 | `typhoon cli check-deps` with a CLI needing missing `jq` | Warns; install path would block if attempted |
+| TC-M5-10 | `typhoon tool promote /usr/local/bin/myscript` | Registry row created with `approved_by='user'`, no origin proposal |
+| TC-M5-11 | `typhoon tool check-deps` with a CLI needing missing `jq` | Warns; install path would block if attempted |
 
 ### 5.6 M6 — Autonomous cadence
 
@@ -219,12 +219,12 @@ Each test case is a command (or short script) with an observable pass criterion.
 
 | ID | What runs | Pass criterion |
 |---|---|---|
-| TC-M7-01 | `typhoon serve --telegram` with valid bot token | Connects; bot is reachable in Telegram |
+| TC-M7-01 | `typhoon gateway --telegram` with valid bot token | Connects; bot is reachable in Telegram |
 | TC-M7-02 | Send message to bot | Signal appears in `dream_signals` with Telegram-sourced `session_id` |
 | TC-M7-03 | Message triggers a forged CLI via memory retrieval | Bot reply contains the CLI's output; `use_count` increments |
 | TC-M7-04 | `typhoon health` | Output includes DB latency, last successful write timestamp, sandbox capability (`landlock` on Linux host) |
 | TC-M7-05 | `typhoon dream stats` after several runs | Output includes: clusters detected, graduated to proposal, approved, rejected, expired-unforged |
-| TC-M7-06 | `typhoon cli show <name>` for active CLI | Output includes `use_count`, `success_count`, `last_used`, recent errors |
+| TC-M7-06 | `typhoon tool show <name>` for active CLI | Output includes `use_count`, `success_count`, `last_used`, recent errors |
 
 ### 5.8 Cross-cutting invariants
 
@@ -249,12 +249,12 @@ Each risk has a trigger (how we notice early), a built-in mitigation (designed i
 | Risk | Trigger | Mitigation (built-in) | Keeper | Fallback |
 |---|---|---|---|---|
 | **R1. Dream produces noisy feature requests** | Rejection rate > 50% over 4 weeks | `dream.min_frequency=5`, `dream.min_score=0.7`; REM clusters only successful chains | `typhoon dream stats` funnel (clusters → proposals → approved) | Tune thresholds up; switch dream LLM to frontier model; suspend dream with `dream.enabled=false` |
-| **R2. Signals aren't a behavioral contract (accepted limitation)** | — | Admitted in §3 of PROPOSAL.md; forge owns correctness, not Typhoon | Per-CLI `success_count/use_count` ratio in `typhoon cli show` | `typhoon cli rollback` is always available; dream auto-proposes replacement on rising error rate |
+| **R2. Signals aren't a behavioral contract (accepted limitation)** | — | Admitted in §3 of PROPOSAL.md; forge owns correctness, not Typhoon | Per-CLI `success_count/use_count` ratio in `typhoon tool show` | `typhoon tool rollback` is always available; dream auto-proposes replacement on rising error rate |
 | **R3. Sandbox tier-claim check unreliable** | Sandbox false-positives or false-negatives in > 10% of checks | Linux `bwrap` as primary, well-tested path; Mac incidental | `typhoon health` reports `sandbox.capability` at startup | Downgrade to "all tiers require review regardless" (already v0.1 default); tier check becomes informational |
-| **R4. Telegram signal volume too sparse** | 7-day rolling average < 20 signals/day | REPL channel retained as complement; Telegram is primary but not only | `typhoon dream stats` shows 7-day signal volume per channel | Lower `dream.min_frequency`; add lightweight `/useful` Telegram command for explicit positive tagging |
+| **R4. Telegram signal volume too sparse** | 7-day rolling average < 20 signals/day | External-agent channel runs in parallel; Telegram is primary but not only — operator-driven activity through external agent CLIs also produces signals | `typhoon dream stats` shows 7-day signal volume per channel | Lower `dream.min_frequency`; add lightweight `/useful` Telegram command for explicit positive tagging |
 | **R5. Operator forge burden heavier than forecast** | Expired-unforged ratio > 50% over 2 weeks | Thresholds tunable to throttle proposal rate | `typhoon dream stats` shows forge queue depth + expired rate | Raise thresholds; bring forward v0.2 forge automation |
 | **R6. TursoDB concurrency / availability** | Transaction errors in logs; dream hangs | Single-writer task inside Typhoon; `BEGIN IMMEDIATE` for all approval transactions; file lock for dream run mutex | `typhoon health` pings DB, reports latency + last-successful-write | Retry with exponential backoff; trust Turso SLA; if sustained, consider local libSQL fallback (v0.2 decision) |
-| **R7. Forge's correctness claim mismatches reality** | Forged CLI passes forge's tests but behaves wrong in real use | Tier review intensity is operator-calibrated; mutate tier requires line-by-line review | Post-install `use_count` / `success_count` ratio per CLI | `typhoon cli rollback`; dream proposes replacement; tighten future requests' acceptance criteria |
+| **R7. Forge's correctness claim mismatches reality** | Forged CLI passes forge's tests but behaves wrong in real use | Tier review intensity is operator-calibrated; mutate tier requires line-by-line review | Post-install `use_count` / `success_count` ratio per CLI | `typhoon tool rollback`; dream proposes replacement; tighten future requests' acceptance criteria |
 | **R8. Success tagging false-positives from abandoned tasks** | Operator notices CLIs proposed for workflows they didn't actually complete; dream quality degrades despite threshold tuning | Simple heuristic for v0.1: exit 0 + no next-turn correction. Known limitation. | `typhoon dream stats` exposes proposal origin breakdown: chains with explicit positive signal vs. chains tagged successful by heuristic only | Add explicit `/good` Telegram command for positive tagging; in v0.2, consider LLM-based correction detection |
 
 ---
@@ -278,13 +278,13 @@ These apply throughout the project. Each phase must not violate them. See `CLAUD
 
 These are design-doc concerns, not plan concerns, but flagging so they don't ambush:
 
-1. **Session definition in REPL / Telegram** — time-window vs. invocation vs. thread. Affects W5, W6, W22.
-2. **Signal capture mechanism** — REPL-as-shell-wrapper vs. agent library instrumentation. Affects W5.
+1. **Session definition across channels** — Telegram thread vs. external-agent invocation grouping. Affects W5, W6, W22.
+2. **Signal capture mechanism** — agent-library instrumentation vs. shell-script wrapper that calls `typhoon signal record`. Affects W5.
 3. **Dream LLM choice** — Haiku 4.5 vs. MiniMax M2.7 vs. other. Affects W8; bake-off recommended before locking.
 4. **Online LLM choice** — Claude Sonnet 4.6 vs. GPT-5 vs. GLM 5.1. Affects W22.
 5. **Sandbox mechanism specifics** — `bwrap` config, seccomp filters, resource limits. Affects W15.
 6. **Sandbox interaction with host security modules** — AppArmor/SELinux profiles can block `bwrap`-started processes from normal libc calls. Decide: require disabled profiles, ship profile templates, or document the host requirement. Affects W15 and deployment.
-7. **Telegram execution permissions** — does a forged CLI triggered via Telegram run with the same privileges as one triggered via REPL? v0.1 default: yes (binary is trusted equally regardless of trigger). Document explicitly so it's not an accidental choice.
+7. **Telegram execution permissions** — does a forged tool triggered via Telegram run with the same privileges as one triggered via external-agent CLI? v0.1 default: yes (the binary is trusted equally regardless of trigger). Document explicitly so it's not an accidental choice.
 8. **Success-tagging edge cases** — what counts as a "correction"? Regex match? LLM classifier? Explicit `/good` command? Affects W6.
 9. **Retrieval budget knobs** — exact `top_k`, similarity threshold, per-turn token budget. Affects W10.
 10. **Replacement similarity thresholds** — embedding similarity and signal-overlap cutoffs. Affects W19.
