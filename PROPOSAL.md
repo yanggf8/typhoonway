@@ -1,6 +1,6 @@
 # Typhoon Way: A Self-Growing Agent That Forges CLIs
 
-> Revised 2026-04-22. Output is CLIs, not skills. The self-growth loop is borrowed from Hermes Agent (evidence it works); the artifact format is where we differ.
+> Revised 2026-04-24. Output is CLIs, not skills. The self-growth loop is informed by Hermes Agent; the artifact format is where we differ.
 
 ---
 
@@ -32,41 +32,48 @@ No skill registry. No system-prompt catalog. No agent-side install.
 
 ## 3. How It Works
 
-**Dream is the engine.** The loop has four roles: the runtime **collects** signals, dream **drafts a feature request** from clustered signals, the **operator forges** the request into source out-of-band using external tooling (Claude Code CLI is the reference choice) and delivers a correctness argument alongside the code, and the **operator-as-user ratifies** by reviewing both.
+**Dream is the analysis engine.** The loop has five roles: the runtime **does the work**, the recorder **persists signals**, dream **analyzes recorded signals and drafts a proposal brief**, the **operator forges** that brief into a high-quality requirement plus source out-of-band using an agentic coding workflow (Codex, Claude Code CLI, Cursor, or similar), and the **operator-as-user ratifies** by reviewing both.
 
-**Typhoon doesn't verify correctness — the forge does.** A CLI forged from observed usage can't be mechanically proven reusable; signals are evidence of what happened, not a behavioral contract. Typhoon's role is to extract a *request* (feature description + acceptance criteria + interface + evidence) and catalog the forge's delivery. The forge is responsible for satisfying the request and producing a correctness argument (tests, examples, whatever fits). The operator accepts or rejects.
+**Typhoon doesn't verify correctness — the forge does.** A CLI forged from observed usage can't be mechanically proven reusable; signals are evidence of what happened, not a behavioral contract. Typhoon's role is to extract a *proposal brief* (problem, repeated workflow, evidence, likely interface, rough tier) and catalog the forge's delivery. The forge is responsible for hardening that brief into an implementable requirement, satisfying it with source, and producing a correctness argument (tests, examples, whatever fits). The operator accepts or rejects.
 
-**Typhoon is language-neutral.** It doesn't write CLI source code — it writes requests. The operator (via the forge) picks whatever language fits (bash, Python, Rust, Deno, Go…) subject only to "runs on the Linux/Mac host that hosts Typhoon." Typhoon catalogs, installs, monitors health, and manages lifecycle — it never synthesizes.
+**Typhoon is language-neutral.** It doesn't write CLI source code — it writes proposal briefs. The operator (via the forge) picks whatever language fits (bash, Python, Rust, Deno, Go…) subject only to "runs on the Linux/Mac host that hosts Typhoon." Typhoon catalogs, installs, monitors health, and manages lifecycle — it never synthesizes.
 
-**Forge is manual in v0.1.** Typhoon does not invoke the forge automatically. The operator reads the request, does the forge work externally, and submits the resulting source back via `typhoon tool propose submit`. Automating the forge invocation is deferred until the full manual loop is validated.
+**Forge is manual in v0.1.** "Forge" means the operator-driven coding-agent workflow used to turn a proposal brief into a CLI delivery. It is not a Typhoon subsystem and not one fixed tool; it may be Codex, Claude Code CLI, Cursor, or any comparable agentic coding environment. Forge quality depends on the chosen agent, model, repo context, prompt, available tools, and tests. Typhoon does not invoke the forge automatically. The operator reads the proposal brief, does the forge work externally, and submits the hardened requirement plus resulting source back via `typhoon tool propose submit`. Automating the forge invocation is deferred until the full manual loop is validated.
+
+**Recorder is the only signal writer.** Gateways, schedulers, and external-agent sidecars never write signal rows directly. They route use events through the runtime, and the runtime asks the recorder to persist normalized signal rows. Dream reads those rows later; it does not collect online activity itself.
 
 ```
  User works with Typhoon (Telegram primary; external-agent CLI for ops)
                        │
                        ▼
-  Every tool call, correction, outcome → dream_signals (SQL rows)
+  Runtime observes tool calls, corrections, outcomes
+                       │
+                       ▼
+           Recorder writes dream_signals (SQL rows)
                        │
                        ▼   nightly cron or `typhoon dream`
            LIGHT phase  — dedupe, sort signals
            REM   phase  — LLM clusters *successful* signal chains,
                           detects repeated workflows, checks existing CLIs
-           DEEP  phase  — LLM drafts a feature request (description,
-                          interface contract, acceptance criteria, out-of-
-                          scope, tier claim, evidence) and writes
+           DEEP  phase  — LLM drafts a proposal brief (problem,
+                          repeated workflow, likely interface, rough
+                          tier claim, ROI, evidence) and writes
                           cli_proposals with status=awaiting_forge
                           (or memories, or soul_proposals)
                        │
                        ▼
-    Operator forges the request externally (feeds it to Claude Code CLI
-    or similar, iterates until the forge's own tests pass) and submits:
-    `typhoon tool propose submit <id> --source <file> [--tests <file>]`
-    Typhoon attaches source + forge's correctness argument, runs the
-    platform-contract sandbox check (is the tier claim honored?) and
-    the hardcoded-path lint. status → awaiting_user.
+    Operator forges the brief externally (Codex, Claude Code CLI,
+    Cursor, or similar). The forge sharpens the requirement, designs tests /
+    examples / checks, writes source, iterates, and submits:
+    `typhoon tool propose submit <id> --requirements <file> \
+      --source <file> [--tests <file>]`
+    Typhoon attaches hardened requirement + source + forge's correctness
+    argument, records declared external dependencies, runs the
+    hardcoded-path lint, and moves status → awaiting_user.
                        │
                        ▼
-    Operator reviews the delivery (request vs. source vs. forge's
-    correctness argument) and approves or sends back.
+    Operator reviews the delivery (brief vs. hardened requirement vs.
+    source vs. forge's correctness argument) and approves or sends back.
                        │
                        ▼
     Artifact lands in ~/.typhoon/bin/<name>, chmod +x, added to PATH.
@@ -76,7 +83,7 @@ No skill registry. No system-prompt catalog. No agent-side install.
     Next session: memory retrieval surfaces the binary, agent invokes it.
 ```
 
-Dream can run on a cheap batch model because it only writes specs. The operator handles forge work out-of-band with whatever tool gives the best code quality (Claude Code CLI is the reference choice). Online interaction touches the frontier LLM and the relevant memories — never a skill catalog.
+Dream can run on a cheap batch model because it only writes proposal briefs. The operator handles forge work out-of-band with whichever coding agent gives the best requirement and code quality for that proposal. Online interaction touches the frontier LLM and the relevant memories — never a skill catalog.
 
 ### What dream produces
 
@@ -85,7 +92,7 @@ Three outputs, each with its own landing path:
 | Output | Lands in | User approval? |
 |---|---|---|
 | Memories | `memories` table (agent context only) | No — low stakes, reversible |
-| CLI feature requests | `cli_proposals` → forge → `~/.typhoon/bin/` | Yes — every time in v0.1 |
+| CLI proposal briefs | `cli_proposals` → forge → `~/.typhoon/bin/` | Yes — every time in v0.1 |
 | Soul proposals | `soul_proposals` → `config` | Yes — every time |
 
 Memory writes happen inside the dream run — worst case is noise in next session's context. Executable state (binaries, config) always routes through a proposal queue.
@@ -94,13 +101,13 @@ Memory writes happen inside the dream run — worst case is noise in next sessio
 
 Memory is how the agent discovers its own CLIs. When the user says "deploy the preview," memory retrieval returns *"You have `deploy-preview` in `~/.typhoon/bin`. It runs build + test + vercel push. Last run: exit 0."* The agent calls it.
 
-Memory structure follows mem0 v3: multi-signal retrieval (semantic + keyword + entity), scoped per user/session/agent. Extraction happens inside the dream cycle instead of per-turn — cheaper at scale and the batching is what makes dream phases worthwhile in the first place. **Retrieval is bounded** (Top-K + similarity threshold) so memory never becomes a skill catalog in disguise.
+Memory structure borrows the useful parts of mem0 v3 rather than depending on mem0 as a service: ADD-only memory writes, entity-aware retrieval, multi-signal ranking (semantic + keyword + entity), and strict token-budgeted retrieval. Extraction happens inside the dream cycle instead of per-turn — cheaper at scale and the batching is what makes dream phases worthwhile in the first place. **Retrieval is bounded** (Top-K + similarity threshold + token budget) so memory never becomes a skill catalog in disguise.
 
 A signal chain is tagged **successful** when the final tool call exits 0 and the next user turn carries no correction signal. REM clusters only successful chains — noisy dead-ends and hallucinated paths don't become CLI proposals.
 
 ### CLI classification: pure / read / mutate
 
-Tiers guide **review strictness**, not approval flow. Every CLI needs operator approval in v0.1.
+Tiers guide **requirement quality and review strictness**, not approval flow. Every CLI needs operator approval in v0.1.
 
 | Tier | Effect | Examples | Review intensity |
 |---|---|---|---|
@@ -108,19 +115,17 @@ Tiers guide **review strictness**, not approval flow. Every CLI needs operator a
 | **Read** | Reads filesystem/network, writes nothing | `git-log-summary`, `deploy-status` | Moderate — check what's read |
 | **Mutate** | Writes disk / network / subprocess | `deploy-preview`, `commit-push`, `restart-service` | Strict — read every line |
 
-Dream emits the tier claim in the request based on which signals the pattern touched. The forge carries that claim into the artifact metadata. Typhoon performs a **platform-contract sandbox check** during `propose submit`: a claimed-pure CLI is run under a sandbox that denies filesystem writes, network, and subprocess spawns. If it can't satisfy the sandbox, the claim is wrong and the tier is downgraded (source stays the same; operator now reviews it as read or mutate).
+Dream emits a rough tier claim based on which signals the pattern touched. The forge confirms or revises that tier in the hardened requirement and uses it to choose the test strategy and implementation constraints. There is no sandbox in v0.1. Tier honesty is reviewed by the operator from the brief, hardened requirement, source, declared dependencies, and forge's correctness argument.
 
-This check is about the tier **claim** being honest, not about correctness. Language-agnostic by design — runtime behavior is observable regardless of what the forge wrote.
-
-**All tiers** also fail a **hardcoded-path scan** — absolute user paths like `/home/…`, `/Users/…`, `C:\…`, `/tmp/…` are rejected because they defeat portability. Source must use `$HOME`, `$PWD`, or CLI arguments. Simple regex, any language.
+**All tiers** also fail a deliberately strict **hardcoded-path scan** — absolute user paths like `/home/…`, `/Users/…`, `C:\…`, `/tmp/…` are rejected because they defeat portability or hide machine assumptions. Source must use `$HOME`, `$PWD`, CLI arguments, or runtime-created temp paths such as `mktemp`. Simple regex, any language. False positives are acceptable in v0.1; the forge can revise the source and resubmit.
 
 (Auto-install of pure-tier CLIs is a v0.2 question. Validate the manual loop first.)
 
 ### Replacement, not duplication
 
-Dream checks existing CLIs before drafting a new one — by description embedding similarity and by signal-sequence overlap with the origin signals of existing CLIs. Three outcomes:
+Dream checks existing CLIs before drafting a new brief — by description embedding similarity and by signal-sequence overlap with the origin signals of existing CLIs. Three outcomes:
 
-- **Same semantics** → proposal is a *replacement* (`replaces: <name>`), carries a diff of old vs. new source and the evidence of what changed in usage.
+- **Same semantics** → proposal is a *replacement* (`replaces: <name>`), carries the evidence of what changed in usage; the forge later produces the source diff.
 - **Name collision** → always treated as a replacement, always reviewed.
 - **Near-duplicate but distinct** → drafted as sibling CLI with a "similar to: `<name>`" note; user decides whether to merge or keep separate.
 
@@ -130,26 +135,27 @@ On approval of a replacement, the old binary moves to `~/.typhoon/bin/.history/<
 
 ### Human in the loop
 
-Every proposal reaches the operator as a pair: the **request** (dream's output) and the **delivery** (forge's output).
+Every proposal reaches the operator as a pair: the **brief** (dream's output) and the **delivery** (forge's output).
 
-The request carries:
+The brief carries:
 
-- Feature description (what this CLI does, in one paragraph)
-- Interface contract (args, flags, stdin/stdout, exit codes)
-- Acceptance criteria (how the operator will know the result is good)
-- Out-of-scope items (what it explicitly doesn't do)
+- Problem description (what repeated pain the CLI should remove)
+- Repeated workflow summary (what the user and agent have been doing manually)
+- Likely interface sketch (candidate args, flags, stdin/stdout, exit codes)
+- Rough acceptance hints (examples of success/failure from observed use, not a complete test plan)
 - Evidence (signal clusters that motivated it — context, not a test suite)
-- Tier claim + ROI score (frequency × success × sequence length × time span)
+- Rough tier claim + ROI score (frequency × success × sequence length × time span)
 - `replaces:` pointer, if it's a replacement
 
 The delivery carries:
 
+- Hardened requirement (final interface contract, acceptance criteria, out-of-scope items, edge cases, and test plan)
 - Source code
 - The forge's correctness argument (its own tests, example invocations, whatever it considered sufficient)
 - External dependencies used
 - Language + runtime
 
-Approval means the operator is satisfied with the delivery against the request. Typhoon runs the platform-contract sandbox check and the hardcoded-path lint, but it does not judge correctness — that's the forge's job and the operator's call.
+Approval means the operator is satisfied with the delivery against the brief and the hardened requirement. Typhoon runs the hardcoded-path lint and records metadata, but it does not judge correctness — that's the forge's job and the operator's call.
 
 Three rejections on the same pattern (or the same replacement) stops dream from re-proposing it — same 3-strike rule as soul proposals.
 
@@ -171,7 +177,7 @@ A CLI has one of these states at any time:
 | `superseded` | Replaced by a newer CLI; source preserved in `.history/`, lineage recorded |
 | `deleted` | Registry row removed; binary archived to `.history/` unless hard-purged |
 
-Proposals have their own state machine: `awaiting_forge → awaiting_user → approved | rejected`. Request lands first (no code); the operator forges externally and submits the source via `typhoon tool propose submit`, which attaches source + forge's correctness argument, runs the sandbox tier-claim check and the hardcoded-path lint, and flips to awaiting_user. The operator then reviews the delivery against the request and approves or rejects.
+Proposals have their own state machine: `awaiting_forge → awaiting_user → approved | rejected`. A brief lands first (no code); the operator forges externally and submits the hardened requirement plus source via `typhoon tool propose submit`, which attaches requirement + source + forge's correctness argument, records declared dependencies and runtime metadata, runs the hardcoded-path lint, and flips to awaiting_user. The operator then reviews the delivery against the brief and approves or rejects.
 
 ### Lifecycle
 
@@ -179,14 +185,14 @@ Proposals have their own state machine: `awaiting_forge → awaiting_user → ap
      signals accumulate
            │
            ▼
-    dream clusters → feature request
+    dream clusters → proposal brief
            │
            ▼
     awaiting_forge
            │
-           │  operator forges externally, submits source
+           │  operator forges externally, submits requirement + source
            ▼
-    awaiting_user  (sandbox tier check + path lint already passed)
+    awaiting_user  (source attached + path lint passed)
            │
            ├── approve ──► active
            │
@@ -206,7 +212,7 @@ Proposals have their own state machine: `awaiting_forge → awaiting_user → ap
 Each registry row holds enough to answer any lifecycle question:
 
 - **Identity**: name, kind (pure/read/mutate), status, description
-- **Body**: source, language (bash/python/rust/deno/…), runtime (interpreter binary or "compiled"), test, external dependencies
+- **Body**: hardened requirement, source, language (bash/python/rust/deno/…), runtime (interpreter binary or "compiled"), tests, external dependencies
 - **Origin**: which proposal and signals produced it; which forge synthesized it; whether user- or auto-approved
 - **Health**: usage count, success count, last used, recent errors
 - **Lineage**: parent, version, what replaced it
@@ -249,18 +255,18 @@ Deprecation never hard-deletes. A disabled CLI stays in the registry and `.histo
 
 ### Sharing across machines
 
-Turso cloud replica (via `typhoon link`) syncs the **registry** — rows in the CLI registry, `cli_proposals`, `memories`, and `config`. Artifacts don't sync automatically (arch and runtime mismatch risk).
+TursoDB is the always-online state store for one Typhoon runtime instance. The runtime itself runs on one machine, but the operator may use the same TursoDB database from other machines during forge/review workflows. Registry rows, `cli_proposals`, `memories`, and `config` are therefore available wherever the operator has credentials. Artifacts don't sync automatically (arch and runtime mismatch risk).
 
 Re-materialization depends on what the forge produced:
 
-- **Script languages** (bash, Python, Deno, Node, Ruby…): `typhoon tool sync` writes the source back to `~/.typhoon/bin/`, `chmod +x`, re-runs replay tests. Near-instant.
+- **Script languages** (bash, Python, Deno, Node, Ruby…): `typhoon tool sync` writes the source back to `~/.typhoon/bin/`, `chmod +x`, and checks declared dependencies. Near-instant.
 - **Compiled languages** (Rust, Go…): the registry carries the actual source that was forged on machine A. `typhoon tool sync` runs the local toolchain (`cargo build`, `go build`) on that exact source to produce the binary — **no forge re-invocation**, no LLM variability. Background, priority-queued by `use_count`.
 
-The registry always stores the spec + forged source. Compiled binaries themselves aren't synced.
+The registry always stores the brief + hardened requirement + forged source. Compiled binaries themselves aren't synced.
 
 ### External dependencies
 
-A CLI that shells out to `jq` or `gh` is portable only where those exist. Dream records `external_deps` during the deep phase by grepping the generated source. `typhoon tool show` lists them; `typhoon tool check-deps` scans the whole registry and flags missing tools.
+A CLI that shells out to `jq` or `gh` is portable only where those exist. The forge declares external dependencies in the delivery, and `typhoon tool propose submit` stores them alongside the source. Typhoon may also run a best-effort source scan to catch obvious missing declarations, but the delivery remains the source of truth. `typhoon tool show` lists dependencies; `typhoon tool check-deps` scans the whole registry and flags missing tools.
 
 **Install gates on `check-deps`**: missing dependencies block install rather than leaving a broken binary on `PATH`. The user installs the tool, rejects the proposal, or edits the source to remove the dependency.
 
@@ -268,11 +274,11 @@ A CLI that shells out to `jq` or `gh` is portable only where those exist. Dream 
 
 ## 5. Evidence This Is Reachable
 
-**Hermes Agent (Nous Research, released Feb 2026)** is the proof that a self-growth loop works at production scale. v0.10 ships a learning loop that creates reusable artifacts from experience, a three-layer memory system, and real users (95.6K GitHub stars in seven weeks). Third-party benchmarks report self-created artifacts cut repeated-task time by ~40%.
+**Hermes Agent (Nous Research; v0.10.0 on Apr 16, 2026)** is evidence that an agent with a closed learning loop can be useful in the wild. As of Apr 24, 2026, the official GitHub repo reports roughly 97.8K stars. The important ideas for Typhoon are not the star count; they are the shape of the loop: create reusable artifacts from experience, improve them through use, retrieve past sessions, run through messaging gateways, and schedule unattended work.
 
-Hermes forges skill documents. Typhoon runs the same loop with **CLIs as the output**. The loop is the proven part; the artifact format is the wedge.
+Hermes forges skill documents and is now exploring self-evolution of skills, prompts, tool descriptions, and eventually code through trace-driven optimization plus human-reviewed PRs. Typhoon adopts the parts that fit: trace analysis, requirement hardening, artifact lifecycle, scheduled review, and human ratification. Typhoon rejects the part that creates an in-context skill catalog. The reusable artifact remains a CLI, not a skill file.
 
-**mem0 v3 (April 2026)** demonstrates that LLM-based memory extraction with multi-signal retrieval hits 91.6 on LoCoMo / 93.4 on LongMemEval with a single-pass ADD-only algorithm. We adopt the extraction algorithm and scope model and run it inside the dream cycle.
+**mem0 v3 (April 2026)** is useful as a memory-system reference, not a dependency. Its public docs report 91.6 on LoCoMo and 93.4 on LongMemEval with ADD-only extraction, entity linking, and multi-signal retrieval under a retrieval token budget. Typhoon borrows those design constraints for its own memory layer: append rather than overwrite, preserve temporal evidence, retrieve by multiple signals, and cap injected context.
 
 ---
 
@@ -282,10 +288,10 @@ Hermes forges skill documents. Typhoon runs the same loop with **CLIs as the out
 |---|---|
 | In-context skill catalog | Token tax — the whole reason we exist |
 | Silent changes to executable state | Every CLI install needs operator approval in v0.1; tier-based auto-install is a v0.2 question |
-| Typhoon verifying CLI correctness | Correctness is the forge's responsibility — it delivers source + correctness argument; operator accepts or rejects. Typhoon only checks platform contract (tier claim, portable paths). |
+| Typhoon verifying CLI correctness | Correctness is the forge's responsibility — it delivers source + correctness argument; operator accepts or rejects. Typhoon stores metadata and rejects hardcoded paths, but does not sandbox or run replay tests as a correctness gate. |
 | Silent personality / config changes | Soul proposals always require approval — no auto-tier exists for `config` |
-| Typhoon writing CLI source code itself | Synthesis is delegated to external tooling (Claude Code CLI is the reference); Typhoon writes specs, not code |
-| Typhoon invoking the forge automatically (v0.1) | Operator runs the forge manually with their own tooling; automation is deferred until the full loop is validated end-to-end by hand |
+| Typhoon writing CLI source code itself | Synthesis is delegated to the operator's chosen coding-agent forge; Typhoon writes proposal briefs, not code |
+| Typhoon invoking the forge automatically (v0.1) | Operator runs the forge manually with their chosen coding agent; automation is deferred until the full loop is validated end-to-end by hand |
 | Picking a single CLI language | Operator (via the forge) picks per CLI, constrained only by "runs on the Linux/Mac host" |
 | Re-implementing Hermes Agent | They forge skills; we forge CLIs. Different artifact, same loop |
 | Cloudflare Workers / browser target | CLI product; wrong substrate |
@@ -299,11 +305,11 @@ Hermes forges skill documents. Typhoon runs the same loop with **CLIs as the out
 | Layer | Choice | Why |
 |---|---|---|
 | Typhoon runtime | Rust 2021 | Single binary, predictable latency, good WASM story later |
-| DB | TursoDB / libSQL | Embedded, SQL, optional cloud replica for multi-device |
-| Channel | Telegram (primary); external-agent CLI (Claude Code, Cursor, Codex…) for the operator | Telegram = always-on + multi-device free; external-agent path uses one-shot subcommands, no REPL needed |
+| DB | TursoDB / libSQL client | Always-online SQL state store; one Typhoon runtime instance owns one DB |
+| Channel | Telegram (primary); external-agent CLI (Codex, Claude Code, Cursor…) for the operator | Telegram = always-on + multi-device free; external-agent path uses one-shot subcommands, no REPL needed |
 | Online LLM (agent) | Cloud frontier (Claude Sonnet 4.6 / GPT-5 / GLM 5.1) | Quality per turn matters |
-| Dream LLM (spec writer) | Cloud cheap batch model (Haiku 4.5 / MiniMax M2.7 / similar) | Cheap, batch, overnight; only writes specs, not code |
-| Forge (code synthesizer) | **Operator-driven** in v0.1 (external tooling + Claude Code CLI as reference) | Not automated by Typhoon yet; operator handles the synthesis, quality iteration, and retries. Automation comes after the manual loop is validated. |
+| Dream LLM (proposal writer) | Cloud cheap batch model (Haiku 4.5 / MiniMax M2.7 / similar) | Cheap, batch, overnight; only writes proposal briefs, not code |
+| Forge (code synthesizer) | **Operator-driven coding-agent workflow** in v0.1 (Codex, Claude Code CLI, Cursor, or similar) | Not automated by Typhoon yet; operator chooses the agent and handles requirement hardening, synthesis, quality iteration, and retries. Automation comes after the manual loop is validated. |
 | CLI target language | **Any** that runs on the Linux/Mac host | Forge picks per CLI (bash, Python, Rust, Deno, Go, …) |
 | State | One DB | Config, memories, signals, proposals, CLI registry — all SQL rows |
 
@@ -314,17 +320,17 @@ Typhoon itself: no YAML, no JSON config, no Python, no Node. Generated CLIs: wha
 ## 8. Typhoon's Own Command Surface (sketch — exact shape belongs in the design doc)
 
 ```bash
-typhoon init                           # local DB + seed, offline
-typhoon link --url URL --token TOK     # optional: add Turso cloud replica
+typhoon init --url URL --token TOK     # connect TursoDB, run migrations + seed
 typhoon gateway --telegram             # Telegram bot daemon (primary channel)
 
-typhoon dream [--catchup]              # manual dream cycle (writes specs)
+typhoon dream [--catchup]              # manual dream cycle (writes proposal briefs)
 typhoon cron                           # scheduler daemon
 
 typhoon tool propose list [--awaiting-forge|--awaiting-user]   # CLI proposals
-typhoon tool propose show <id>                                 # spec + replay inputs
-typhoon tool propose submit <id> --source <file>               # attach operator-forged source,
-                                                          # run replay tests + tier verify
+typhoon tool propose show <id>                                 # brief + evidence
+typhoon tool propose submit <id> --requirements <file> --source <file>
+                                                          # attach forged requirement, source,
+                                                          # correctness argument, deps, metadata
 typhoon tool propose approve|edit|reject <id>             # resolve once awaiting_user
 typhoon tool list|show|disable|enable|rollback|delete|purge|promote|sync|check-deps  # lifecycle (see §4)
 typhoon soul list|show|approve|reject                     # personality/config proposals
