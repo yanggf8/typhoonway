@@ -87,7 +87,7 @@
 
 <p>The tool manager is firmly on the management plane: it operates directly on proposals and the registry and never goes through core, because managing tools is meta, not use. Dream is also management plane — it is a standalone batch process that reads accumulated signals and writes proposals and memories. The two are complements: core feeds the signal table by recording use; dream drains it into the proposal queue; the tool manager ratifies approved results into the registry.</p>
 
-<p>The system context is shown below. Typhoon is split into a use plane (everything routing through core, where signals are recorded) and a management plane (everything operating directly on state, no signals generated). Inside the use plane, the gateway layer holds long-running channel daemons (Telegram today; future Slack, Discord, web hooks); the external-agent channel bypasses the gateway layer because each agent action is a one-shot subcommand into core. Gateways, external-agent endpoints, and scheduler use-target dispatch are the paths into core. The frontier LLM is reached only through core, and only on the Telegram-gateway path. Two paths converge on the tool manager: dream writes proposal briefs into its queue, and forged deliveries return through it via <code>tool propose submit</code>. Solid arrows are flows Typhoon controls; dotted arrows mark the forge step, which the operator drives outside Typhoon's control plane in v0.1 and may automate with a forge CLI later.</p>
+<p>The system context is shown below. Typhoon is split into a use plane (everything routing through core, where signals are recorded) and a management plane (everything operating directly on state, no signals generated). Inside the use plane, the gateway group holds long-running channel daemons (Telegram today; future Slack, Discord, web hooks); the external-agent channel bypasses that group because each agent action is a one-shot subcommand into core. Gateways, external-agent endpoints, and scheduler use-target dispatch are the paths into core. The frontier LLM is reached only through core, and only on the Telegram-gateway path. Two paths converge on the tool manager: dream writes proposal briefs into its queue, and forged deliveries return through it via <code>tool propose submit</code>. Solid arrows are flows Typhoon controls; dotted arrows mark the forge step, which the operator drives outside Typhoon's control plane in v0.1 and may automate with a forge CLI later.</p>
 
 <div class="mermaid">
 flowchart TB
@@ -261,25 +261,28 @@ flowchart TB
 
 <table>
   <thead>
-    <tr><th>Module</th><th>Primary layer</th><th>Purpose</th><th>Key dependencies</th></tr>
+    <tr><th>Module</th><th>Primary layer / block</th><th>Purpose</th><th>Key dependencies</th></tr>
   </thead>
   <tbody>
     <tr><td><b>Bootstrap</b></td><td>Application</td><td>Initialise a Typhoon instance against an operator-provided TursoDB URL/token: run schema migrations and write seed config. Idempotent.</td><td>Config, Identity bindings, TursoDB adapter</td></tr>
-    <tr><td><b>Telegram gateway</b></td><td>Interaction + application</td><td>Long-poll daemon that hosts the Telegram-channel agent loop: resolve the incoming Telegram peer to a canonical user via Identity bindings (or run onboarding for an unbound peer), normalise the message, drive core scoped to that user, post replies.</td><td>Core, Identity bindings, Telegram adapter</td></tr>
+    <tr><td><b>Telegram gateway</b></td><td>Interaction + application</td><td>Long-poll daemon that hosts the Telegram-channel agent loop: resolve the incoming Telegram peer to a canonical user via Identity bindings (or run onboarding for an unbound peer), normalise the message, drive core scoped to that user, post replies.</td><td>Core, Identity bindings, Channel service adapters</td></tr>
     <tr><td><b>External-agent endpoints</b></td><td>Interaction + application</td><td>Adapter logic for external-agent reports and queries: validate the input shape, default the canonical_user_id to the operator (v0.1; explicit <code>--user</code> later), invoke core. The <code>signal record</code> / <code>memory query</code> handlers are thin wrappers that call into this module.</td><td>Core, Identity bindings</td></tr>
     <tr><td><b>Scheduler</b></td><td>Application</td><td>Cron daemon and entry registry: tick on schedule, fire use-plane targets through core, spawn management-plane targets directly, track next-run times.</td><td>Core, Config</td></tr>
-    <tr><td><b>Core</b></td><td>Application</td><td>Use-plane dispatcher: receive invocations carrying a <code>canonical_user_id</code> from gateway / scheduler / external-agent endpoints, orchestrate executors (LLM call, tool exec, memory read scoped to the user), drive the recorder for each invocation.</td><td>Signal recorder, Tool registry, Memory store, LLM adapter</td></tr>
+    <tr><td><b>Core</b></td><td>Application</td><td>Use-plane dispatcher: receive invocations carrying a <code>canonical_user_id</code> from gateway / scheduler / external-agent endpoints, orchestrate executors (LLM call, tool exec, memory read scoped to the user), drive the recorder for each invocation.</td><td>Signal recorder, Tool registry, Memory store, LLM service adapters</td></tr>
     <tr><td><b>Signal recorder</b></td><td>Application</td><td>Sole writer to the signal store. Driven only by core; persists one signal row per dispatched invocation, tagged with the originating <code>canonical_user_id</code>.</td><td>Signal store</td></tr>
-    <tr><td><b>Dream cycle</b></td><td>Application</td><td>Standalone batch (file-locked single-writer). Runs light → REM → deep phases against accumulated signals; writes memories and proposals; prunes stale signals.</td><td>Signal store, Memory store, Proposal queue, Tool registry, Dream LLM adapter</td></tr>
-    <tr><td><b>Tool manager</b></td><td>Interaction + application</td><td>Full proposal and installed-tool lifecycle through the unified <code>typhoon tool</code> namespace: ingest proposal briefs and forge deliveries (submit requires hardened requirements, source, optional tests, and path lint) and operate installed tools (list/show/diff/disable/enable/rollback/delete/purge/promote/sync). Proposal submit does not touch the registry; approval is the first registry mutation. Every mutating subcommand checks operator role; users may invoke read-only listing of tools.</td><td>Proposal queue, Tool registry, Identity bindings (role check), path-lint adapter</td></tr>
+    <tr><td><b>Dream cycle</b></td><td>Application</td><td>Standalone batch (file-locked single-writer). Runs light → REM → deep phases against accumulated signals; writes memories and proposals; prunes stale signals.</td><td>Signal store, Memory store, Proposal queue, Tool registry, LLM service adapters</td></tr>
+    <tr><td><b>Tool manager</b></td><td>Interaction + application</td><td>Full proposal and installed-tool lifecycle through the unified <code>typhoon tool</code> namespace: ingest proposal briefs and forge deliveries (submit requires hardened requirements, source, optional tests, and path lint) and operate installed tools (list/show/diff/disable/enable/rollback/delete/purge/promote/sync). Proposal submit does not touch the registry; approval is the first registry mutation. Every mutating subcommand checks operator role; users may invoke read-only listing of tools.</td><td>Proposal queue, Tool registry, Identity bindings (role check), path-lint helper</td></tr>
     <tr><td><b>Soul manager</b></td><td>Interaction + application</td><td>Per-user flow for soul proposals: list / show / approve / reject. A user may approve their own proposals; the operator may approve any. Approval atomically updates the user's config row and marks the proposal approved.</td><td>Proposal queue, Config, Identity bindings (role check)</td></tr>
     <tr><td><b>Health inspector</b></td><td>Interaction + application</td><td>Read-only <code>typhoon health</code> implementation. Reports gateway and cron daemon liveness, optional heartbeat timestamps, DB latency, and recent recorder/dream status. One-shot CLI commands do not have health.</td><td>Config, Signal store, Dream run log, TursoDB adapter</td></tr>
-    <tr><td><b>Tool registry</b></td><td>Data access</td><td>Data-access library for tool metadata rows and binary references. Provides transactional reads/writes, checksum persistence, filesystem reconciliation, lineage/history queries, active-tools-only filtering, and archival mechanics.</td><td>TursoDB adapter, Filesystem adapter</td></tr>
-    <tr><td><b>Memory store</b></td><td>Data access</td><td>Data-access library for memories. Stores and retrieves rows scoped by <code>canonical_user_id</code>; exposes bounded retrieval primitives used by core and extraction/write primitives used by dream.</td><td>TursoDB adapter</td></tr>
-    <tr><td><b>Signal store</b></td><td>Data access</td><td>Data-access library for signals. Stores signal rows, user tags, success fields, and run metadata; exposes recorder writes, dream reads, user-scoped reads, and stale-prune primitives.</td><td>TursoDB adapter</td></tr>
-    <tr><td><b>Proposal queue</b></td><td>Data access</td><td>Data-access library for <code>cli_proposals</code> and <code>soul_proposals</code>. Persists statuses, rejection counters, forge delivery fields, and atomic proposal-row updates.</td><td>TursoDB adapter</td></tr>
-    <tr><td><b>Config</b></td><td>Data access</td><td>Data-access library for typed config values. Persists system-scoped and per-user rows and exposes get/set/list/validate primitives with database-level defense-in-depth checks.</td><td>TursoDB adapter</td></tr>
-    <tr><td><b>Identity bindings</b></td><td>Data access</td><td>Data-access library for channel bindings and canonical-user rows. Persists binding tuples, verification state, and role records.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Tool registry</b></td><td>Integration / data access</td><td>Data-access library for tool metadata rows and binary references. Provides transactional reads/writes, checksum persistence, filesystem reconciliation, lineage/history queries, active-tools-only filtering, and archival mechanics.</td><td>TursoDB adapter, Filesystem adapter</td></tr>
+    <tr><td><b>Memory store</b></td><td>Integration / data access</td><td>Data-access library for memories. Stores and retrieves rows scoped by <code>canonical_user_id</code>; exposes bounded retrieval primitives used by core and extraction/write primitives used by dream.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Signal store</b></td><td>Integration / data access</td><td>Data-access library for signals. Stores signal rows, user tags, success fields, and run metadata; exposes recorder writes, dream reads, user-scoped reads, and stale-prune primitives.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Proposal queue</b></td><td>Integration / data access</td><td>Data-access library for <code>cli_proposals</code> and <code>soul_proposals</code>. Persists statuses, rejection counters, forge delivery fields, and atomic proposal-row updates.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Config</b></td><td>Integration / data access</td><td>Data-access library for typed config values. Persists system-scoped and per-user rows and exposes get/set/list/validate primitives with database-level defense-in-depth checks.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Identity bindings</b></td><td>Integration / data access</td><td>Data-access library for channel bindings and canonical-user rows. Persists binding tuples, verification state, and role records.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Storage adapters</b></td><td>Integration / data access</td><td>Driver-facing adapters for database and artifact storage. They hide store-specific connection, transaction, filesystem, and error mechanics from data-access libraries.</td><td>Data store layer</td></tr>
+    <tr><td><b>Channel service adapters</b></td><td>Integration / service adapters</td><td>Typed clients and request/response mapping for channel APIs used by gateway processes. They speak channel protocols but do not own gateway workflow.</td><td>External channel services</td></tr>
+    <tr><td><b>LLM service adapters</b></td><td>Integration / service adapters</td><td>Typed clients and request/response mapping for frontier and batch LLM calls. They speak provider protocols but do not own prompting strategy or workflow decisions.</td><td>External LLM services</td></tr>
   </tbody>
 </table>
 
@@ -293,11 +296,11 @@ flowchart TB
   </thead>
   <tbody>
     <tr><td>Initialise a Typhoon instance</td><td>Bootstrap → Config + Identity bindings (seed operator) → (TursoDB adapter)</td></tr>
-    <tr><td>Telegram-channel turn (full agent loop)</td><td>Telegram gateway → Identity bindings (resolve peer) → Core → Memory store (retrieval, scoped to user) → (LLM adapter) → Tool registry → Signal recorder → Signal store (tagged with user)</td></tr>
+    <tr><td>Telegram-channel turn (full agent loop)</td><td>Channel service adapters → Telegram gateway → Identity bindings (resolve peer) → Core → Memory store (retrieval, scoped to user) → LLM service adapters → Tool registry → Signal recorder → Signal store (tagged with user)</td></tr>
     <tr><td>Telegram onboarding (unbound peer)</td><td>Telegram gateway → Identity bindings (create new canonical user; mark verified)</td></tr>
     <tr><td>External-agent tool report</td><td>External-agent endpoints → Identity bindings (default to operator) → Core → Signal recorder → Signal store</td></tr>
     <tr><td>External-agent memory query</td><td>External-agent endpoints → Identity bindings (default to operator) → Core → Memory store (scoped to operator)</td></tr>
-    <tr><td>Scheduled dream run</td><td>Scheduler → Dream cycle → Signal store + Memory store + Tool registry + Proposal queue</td></tr>
+    <tr><td>Scheduled dream run</td><td>Scheduler → Dream cycle → Signal store + Memory store + Tool registry + LLM service adapters + Proposal queue</td></tr>
     <tr><td>Forge submission &amp; ratification</td><td>Operator → Tool manager (Identity role check, path lint) → Proposal queue → Tool registry <i>(approval only)</i></td></tr>
     <tr><td>Soul proposal ratification</td><td>User or Operator → Soul manager (Identity role check) → Proposal queue → Config (per-user row) <i>(atomic at approve)</i></td></tr>
     <tr><td>Tool replacement</td><td>Dream cycle → Proposal queue → Operator → Tool manager → Tool registry + filesystem <i>(registry mutation protocol, <code>.history/</code>)</i></td></tr>
@@ -308,7 +311,7 @@ flowchart TB
 
 <h4>Module relationships</h4>
 
-<p>The diagram below shows the modules and the load-bearing dependencies between them. Edges are not exhaustive — only the dependencies that matter for understanding Typhoon's structure are drawn. Data-access modules also use the data-store layer; those edges are omitted to keep the picture readable.</p>
+<p>The diagram below shows the modules and the load-bearing dependencies between them. Edges are not exhaustive — only the dependencies that matter for understanding Typhoon's structure are drawn. Data-access modules also use the data-store layer, and service adapters use the external-systems side column; those edges are omitted to keep the picture readable.</p>
 
 <div class="mermaid">
 flowchart TB
@@ -336,11 +339,22 @@ flowchart TB
       ID[Identity bindings<br/>+ role lookup]
     end
 
+    subgraph ServiceAdapterModules["Service adapter modules"]
+      direction LR
+      CHAN[Channel service adapters]
+      LLM[LLM service adapters]
+    end
+
     %% Application-internal edges
     TGGW --> CORE
     EXTEP --> CORE
     SCHED --> CORE
     CORE ==>|drives| REC
+
+    %% Service adapter edges
+    TGGW --> CHAN
+    CORE --> LLM
+    DREAM --> LLM
 
     %% Identity reads at the edges
     TGGW --> ID
@@ -348,7 +362,7 @@ flowchart TB
     TOOL --> ID
     SOUL --> ID
 
-    %% Application to persistence / integration
+    %% Application to data access
     CORE --> REG
     CORE --> MEM
     REC --> SIG
@@ -481,7 +495,7 @@ flowchart TB
     <tr><td><b>S2 — Channels &amp; dispatch</b> (use plane)</td><td>Telegram gateway, External-agent endpoints, Scheduler, Core, Signal recorder</td><td>Receive every "use" invocation through an adapter, dispatch the work, record one signal per invocation.</td></tr>
     <tr><td><b>S3 — Self-growth</b></td><td>Dream cycle</td><td>Mine accumulated signals into memories and proposals on a scheduled batch.</td></tr>
     <tr><td><b>S4 — Registry management</b></td><td>Tool manager (with path lint), Soul manager</td><td>Move proposals through ratification into atomic registry / config mutations.</td></tr>
-    <tr><td><b>S5 — Data access &amp; adapters</b></td><td>Tool registry, Memory store, Signal store, Proposal queue, Config, Identity bindings<br/>storage adapters, service adapters, path lint</td><td>Own Typhoon's data-access mechanics and typed adapters for storage drivers and non-storage services.</td></tr>
+    <tr><td><b>S5 — Data access &amp; adapters</b></td><td>Tool registry, Memory store, Signal store, Proposal queue, Config, Identity bindings<br/>Storage adapters, Channel service adapters, LLM service adapters</td><td>Own Typhoon's data-access mechanics and typed adapters for storage drivers and non-storage services.</td></tr>
   </tbody>
 </table>
 
@@ -555,7 +569,7 @@ flowchart TB
     │                                 #         Signal store, Proposal queue, Config,
     │                                 #         Identity bindings
     ├── typhoon-adapters/             # S5 adapters — storage drivers, service clients,
-    │                                 #         LLM clients, Telegram, path lint
+    │                                 #         LLM clients, Telegram
     ├── typhoon-foundation/           # foundation sidecar — error types, clock, ID gen,
     │                                 #      logging facade,
     │                                 #      telemetry, tracing facade, panic hook,
