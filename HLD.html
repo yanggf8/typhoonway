@@ -446,7 +446,7 @@ flowchart TB
   <tbody>
     <tr><td>Channel turn</td><td>Channel service ↔ channel adapter ↔ Telegram gateway ↔ core</td><td>Fetch update, resolve peer, dispatch invocation, render reply</td><td>Gateway resolves <code>canonical_user_id</code> before core; service adapter owns protocol mechanics</td></tr>
     <tr><td>External-agent endpoint</td><td>External agent CLI ↔ endpoint process ↔ core</td><td>Record signal, query memory, return structured CLI output</td><td>v0.1 defaults identity to operator unless a binding mechanism is added</td></tr>
-    <tr><td>Scheduled execution</td><td>Scheduler ↔ core / dream / tool subprocess</td><td>Fire use-plane target through core; fire management target directly; execute scheduled tool</td><td>Only use-plane targets produce signals; management targets are observed through their own tables</td></tr>
+    <tr><td>Scheduled execution</td><td>Scheduler ↔ core / management process</td><td>Fire use-plane target through core; fire management target directly</td><td>Only use-plane targets produce signals; management targets are observed through their own tables</td></tr>
     <tr><td>LLM call</td><td>Core or dream ↔ LLM service adapter ↔ LLM service</td><td>Prompt request, tool-loop context, structured response</td><td>Application code never embeds provider wire formats; adapter is protocol-only</td></tr>
     <tr><td>State access</td><td>Application process ↔ data-access API ↔ data store</td><td>Memory query, registry lookup, proposal mutation, config mutation, identity lookup</td><td>All store access uses typed data-access APIs; multi-row writes use transactions</td></tr>
     <tr><td>Signal recording</td><td>Core ↔ signal recorder ↔ signal store</td><td>Persist invocation outcome and success tags</td><td>Core is the only process that drives the recorder</td></tr>
@@ -456,76 +456,187 @@ flowchart TB
   </tbody>
 </table>
 
-<h4>Process map — message and control flow</h4>
+<h4>Process sequences</h4>
 
-<p>The map is a process-view diagram: boxes are responsible participants, arrows are exchanged messages or control transfers, and bracketed labels are runtime rules. It is intentionally not a deployment diagram.</p>
+<p>Each sequence diagram lists systems across the top and time flows downward. Arrows crossing lanes are the message signatures exchanged between systems; notes capture the runtime rules that influence the sequence.</p>
+
+<h5>Channel use turn</h5>
 
 <div class="mermaid">
-flowchart LR
-    subgraph External["Actors and services outside Typhoon"]
-      direction TB
-      CH[Channel service<br/>Telegram today]
-      AG[External agent CLI]
-      OP[Operator]
-      LLM[LLM service]
+sequenceDiagram
+    participant Channel as Channel service
+    participant Adapter as Channel adapter
+    participant Gateway as Telegram gateway
+    participant Identity as Identity bindings
+    participant Core as Core dispatcher
+    participant Data as Data-access APIs
+    participant LLMAdapter as LLM adapter
+    participant LLM as LLM service
+    participant Tool as Forged tool
+    participant Recorder as Signal recorder
+
+    Channel->>Adapter: fetch_update(bot_token, offset)
+    Adapter-->>Gateway: channel_update(peer_id, text, attachments)
+    Gateway->>Identity: resolve_binding(channel, peer_id)
+    Identity-->>Gateway: canonical_user_id
+    Gateway->>Core: dispatch(invocation, canonical_user_id)
+    Core->>Data: query_memory(canonical_user_id, request)
+    Data-->>Core: memory_context
+    Core->>Data: lookup_active_tools()
+    Data-->>Core: tool_manifest
+    Core->>LLMAdapter: complete(prompt, memory_context, tool_manifest)
+    LLMAdapter->>LLM: provider_request(messages, tools)
+    LLM-->>LLMAdapter: provider_response(content, tool_calls)
+    LLMAdapter-->>Core: model_turn(content, tool_calls)
+    opt tool call requested
+      Core->>Tool: execute(tool_name, args, env)
+      Tool-->>Core: tool_result(exit_code, stdout, stderr)
     end
+    Core->>Recorder: record_signal(invocation, result, success_tags)
+    Recorder->>Data: insert_signal(canonical_user_id, signal)
+    Core-->>Gateway: dispatch_result(reply)
+    Gateway->>Adapter: send_reply(peer_id, reply)
+    Adapter->>Channel: post_message(peer_id, reply)
+    Note over Gateway,Recorder: Core is the only caller that drives signal recording.
+</div>
 
-    subgraph Processes["Typhoon processes"]
-      direction TB
-      GW[Telegram gateway<br/>daemon]
-      EP[External-agent endpoint<br/>one-shot]
-      CRON[Scheduler<br/>daemon]
-      CORE[Core dispatcher]
-      REC[Signal recorder]
-      DREAM[Dream batch<br/>locked one-shot]
-      MGR[Tool / soul manager<br/>operator one-shot]
-      HEALTH[Health inspector<br/>read-only one-shot]
-      TOOLPROC[Forged tool subprocess]
+<h5>External-agent endpoint</h5>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Agent as External agent CLI
+    participant Endpoint as Typhoon endpoint
+    participant Core as Core dispatcher
+    participant Data as Data-access APIs
+    participant Recorder as Signal recorder
+
+    Agent->>Endpoint: signal_record(payload) / memory_query(request)
+    Endpoint->>Core: dispatch(endpoint_request, operator_user_id)
+    alt memory query
+      Core->>Data: query_memory(operator_user_id, request)
+      Data-->>Core: memory_results
+    else signal record
+      Core->>Recorder: record_signal(endpoint_request, result, success_tags)
+      Recorder->>Data: insert_signal(operator_user_id, signal)
     end
+    Core-->>Endpoint: endpoint_result(status, body)
+    Endpoint-->>Agent: cli_output(status, body)
+    Note over Endpoint,Core: v0.1 defaults external-agent identity to operator.
+</div>
 
-    subgraph Integration["Integration APIs"]
-      direction TB
-      CHAD[Channel service adapter]
-      LLMAD[LLM service adapter]
-      DATA[Data-access APIs]
+<h5>Scheduled execution</h5>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Cron as Scheduler
+    participant Core as Core dispatcher
+    participant Dream as Dream batch
+    participant Tool as Forged tool
+    participant Recorder as Signal recorder
+    participant Data as Data-access APIs
+
+    Cron->>Data: load_due_entries(now)
+    Data-->>Cron: due_entries
+    alt use-plane entry
+      Cron->>Core: dispatch(scheduled_invocation, canonical_user_id)
+      Core->>Tool: execute(tool_name, args, env)
+      Tool-->>Core: tool_result(exit_code, stdout, stderr)
+      Core->>Recorder: record_signal(invocation, result, success_tags)
+      Recorder->>Data: insert_signal(canonical_user_id, signal)
+    else management entry
+      Cron->>Dream: run_dream(reason=scheduled)
+      Dream-->>Cron: dream_exit(status)
     end
+    Cron->>Data: mark_schedule_attempt(entry_id, status)
+    Note over Cron,Recorder: Only the use-plane branch records a signal.
+</div>
 
-    subgraph Stores["Typhoon data stores"]
-      direction TB
-      DB[(TursoDB)]
-      FS[Filesystem<br/>bin, history, locks]
+<h5>Dream batch</h5>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Trigger as Operator or scheduler
+    participant Dream as Dream batch
+    participant Lock as Filesystem lock
+    participant Data as Data-access APIs
+    participant LLMAdapter as LLM adapter
+    participant LLM as LLM service
+
+    Trigger->>Dream: run_dream(reason)
+    Dream->>Lock: acquire(dream.lock)
+    alt lock acquired
+      Dream->>Data: read_recent_signals(window)
+      Data-->>Dream: signal_batch
+      Dream->>Data: read_memory_context(bounds)
+      Data-->>Dream: memory_context
+      Dream->>LLMAdapter: analyze(signal_batch, memory_context)
+      LLMAdapter->>LLM: provider_request(messages)
+      LLM-->>LLMAdapter: provider_response(structured_findings)
+      LLMAdapter-->>Dream: findings
+      Dream->>Data: upsert_memories(findings)
+      Dream->>Data: enqueue_proposals(requirements, forge_brief)
+      Dream->>Data: mark_signals_pruned(prune_policy)
+      Dream->>Lock: release(dream.lock)
+      Dream-->>Trigger: dream_exit(success)
+    else lock busy
+      Dream-->>Trigger: dream_exit(lock_error)
     end
+    Note over Dream,Data: Dream proposes new work; ratification remains outside dream.
+</div>
 
-    CH -- update / reply --> CHAD
-    CHAD -- update --> GW
-    GW -- reply --> CHAD
-    GW -- invocation<br/>[identity resolved] --> CORE
+<h5>Registry mutation</h5>
 
-    AG -- signal record / memory query --> EP
-    EP -- invocation<br/>[operator default] --> CORE
+<div class="mermaid">
+sequenceDiagram
+    participant Operator as Operator
+    participant Manager as Tool manager
+    participant Identity as Identity bindings
+    participant Queue as Proposal queue
+    participant Registry as Tool registry
+    participant Memory as Memory store
+    participant FS as Filesystem
 
-    CRON -- use target --> CORE
-    CRON -- management target --> DREAM
-    CRON -- scheduled tool --> TOOLPROC
-    OP -- proposal / lifecycle command --> MGR
-    OP -- health command --> HEALTH
+    Operator->>Manager: approve_tool(proposal_id)
+    Manager->>Identity: assert_role(canonical_user_id, operator)
+    Identity-->>Manager: role_ok
+    Manager->>Queue: load_proposal_for_update(proposal_id)
+    Queue-->>Manager: proposal(requirements, artifact, checksum)
+    Manager->>FS: lock_tool(tool_name)
+    Manager->>FS: write_staging(tool_name, bytes)
+    Manager->>FS: verify_checksum(staging_path, checksum)
+    Manager->>Registry: begin_registry_transaction()
+    Manager->>Registry: insert_or_update_active_tool(tool_name, checksum)
+    Manager->>Memory: write_seed_memory(tool_name, usage)
+    Manager->>Queue: mark_approved(proposal_id)
+    Manager->>FS: atomic_rename(staging_path, active_path)
+    Manager->>Registry: commit_registry_transaction()
+    Manager->>FS: unlock_tool(tool_name)
+    Manager-->>Operator: approval_result(tool_name, checksum)
+    Note over Manager,FS: DB is source of truth; filesystem mutation follows the registry protocol.
+</div>
 
-    CORE -- memory query / registry lookup --> DATA
-    CORE -- prompt request --> LLMAD
-    LLMAD -- provider request / response --> LLM
-    CORE -- record signal<br/>[core only] --> REC
-    REC -- signal row --> DATA
-    CORE -- execute tool --> TOOLPROC
-    TOOLPROC -- status / stdout --> CORE
+<h5>Health inspection</h5>
 
-    DREAM -- signals, memories, proposals<br/>[dream.lock] --> DATA
-    DREAM -- batch prompt --> LLMAD
-    MGR -- proposal / registry / config mutation<br/>[operator gate] --> DATA
-    MGR -- executable mutation<br/>[registry protocol] --> FS
-    HEALTH -. daemon state / latency .-> DATA
+<div class="mermaid">
+sequenceDiagram
+    participant Operator as Operator
+    participant Health as Health inspector
+    participant Data as Data-access APIs
+    participant DB as TursoDB
 
-    DATA -- SQL transaction / query --> DB
-    DATA -- file read / write / lock --> FS
+    Operator->>Health: health()
+    Health->>Data: read_daemon_state(gateway, scheduler)
+    Data->>DB: select_daemon_rows(process_names)
+    DB-->>Data: daemon_rows
+    Data-->>Health: liveness_and_heartbeat
+    Health->>Data: measure_db_latency()
+    Data->>DB: ping()
+    DB-->>Data: pong()
+    Data-->>Health: db_latency
+    Health->>Data: read_recent_recorder_and_dream_status()
+    Data-->>Health: recent_status
+    Health-->>Operator: health_report(status, details)
+    Note over Health,Data: Health is read-only and creates no daemon state for one-shot CLIs.
 </div>
 
 <h4>Process-view verification checklist</h4>
@@ -534,10 +645,10 @@ flowchart LR
   <thead><tr><th>Check</th><th>Typhoon answer</th></tr></thead>
   <tbody>
     <tr><td>Determine interfaces</td><td>The view lists channel, external-agent, scheduler, LLM, state-access, recorder, registry-mutation, dream, and health interfaces.</td></tr>
-    <tr><td>Identify involved systems</td><td>The map partitions external actors/services, Typhoon processes, integration APIs, and Typhoon data stores.</td></tr>
-    <tr><td>Identify activities and control flow</td><td>Use-plane work flows through core; management-plane work goes directly to the responsible process; dream and registry mutation show their exclusive-control rules.</td></tr>
-    <tr><td>Define messages</td><td>Every process arrow carries the message being exchanged: update, reply, invocation, prompt, response, signal row, proposal mutation, registry mutation, health read, or file operation.</td></tr>
-    <tr><td>Define rules</td><td>The diagram names the runtime rules that influence actions: identity resolution, operator gate, core-only recording, <code>dream.lock</code>, transactions, and the registry protocol.</td></tr>
+    <tr><td>Identify involved systems</td><td>Each sequence lists its involved systems as participants across the top row.</td></tr>
+    <tr><td>Identify activities and control flow</td><td>Time runs downward; each activity appears in order under the responsible participant or as a message to the next participant.</td></tr>
+    <tr><td>Define messages</td><td>Every cross-lane arrow carries a message signature such as <code>dispatch(invocation, canonical_user_id)</code>, <code>complete(prompt, memory_context, tool_manifest)</code>, or <code>approve_tool(proposal_id)</code>.</td></tr>
+    <tr><td>Define rules</td><td>Sequence notes name the runtime rules that influence actions: identity resolution, operator gate, core-only recording, <code>dream.lock</code>, transactions, and the registry protocol.</td></tr>
     <tr><td>Verify the view</td><td>No actor writes stores directly; application code reaches stores through data-access APIs; external services are reached through service adapters; only gateway and scheduler have daemon health state.</td></tr>
   </tbody>
 </table>
