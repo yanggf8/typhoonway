@@ -399,7 +399,7 @@ flowchart TB
     <tr><td><b>Scheduler</b> (<code>typhoon cron</code>)</td><td>Long-running daemon</td><td>Yes</td><td>Operator deploys one</td></tr>
     <tr><td><b>Health inspector</b> (<code>typhoon health</code>)</td><td>One-shot per invocation</td><td>No</td><td>Reads gateway/cron daemon liveness and heartbeat state</td></tr>
     <tr><td><b>Dream batch</b> (<code>typhoon dream</code>)</td><td>Transient (cron-fired or manual)</td><td>Yes</td><td>Filesystem lock (<code>dream.lock</code>); concurrent invocations exit with lock error</td></tr>
-    <tr><td><b>Tool manager</b> (<code>typhoon tool ...</code>)</td><td>One-shot per invocation</td><td>No</td><td>Concurrent invocations serialise through TursoDB transactions (<code>BEGIN IMMEDIATE</code>)</td></tr>
+    <tr><td><b>Tool manager</b> (<code>typhoon tool ...</code>)</td><td>One-shot per invocation</td><td>No</td><td>DB transactions serialise registry state; per-tool filesystem locks serialise binary writes</td></tr>
     <tr><td><b>Soul manager</b> (<code>typhoon soul ...</code>)</td><td>One-shot per invocation</td><td>No</td><td>Same — DB transactions serialise</td></tr>
     <tr><td><b>External-agent endpoints</b> (<code>typhoon signal record</code>, <code>typhoon memory query</code>)</td><td>One-shot per invocation</td><td>No</td><td>High-concurrency expected; DB transactions serialise writes; reads are non-blocking</td></tr>
     <tr><td><b>Bootstrap</b> (<code>typhoon init --url URL --token TOK</code>)</td><td>One-shot</td><td>Idempotent</td><td><code>schema_migrations</code> version check; re-running is a no-op</td></tr>
@@ -427,7 +427,19 @@ flowchart TB
   </tbody>
 </table>
 
-<p>SQL transactions serialize database state, but they do not make filesystem writes transactional. If two processes write the same path without coordination, the filesystem gives last-writer-wins behavior; it will not know which write matches the committed registry row. Typhoon therefore treats installed-tool mutation as a registry protocol, not a raw file copy: a tool-manager approval or lifecycle command takes a TursoDB write transaction and a per-tool filesystem lock, writes the executable to a staging path outside the active PATH, verifies permissions and checksum, performs an atomic <code>rename(2)</code> into <code>~/.typhoon/bin/&lt;name&gt;</code>, then commits the registry row and proposal status that reference the installed checksum. If a normal pre-commit step or commit fails while the process is alive, the DB transaction rolls back and Typhoon removes the staging/final file before releasing the lock. A crash can still leave filesystem leftovers because there is no real distributed transaction between TursoDB and the host filesystem. v0.1 chooses the DB as source of truth: no CLI is considered installed unless an approved registry row exists and its checksum matches the file on disk. <code>tool sync</code> removes unreferenced staging/final files and surfaces any active-row/checksum mismatch for operator repair. If a future version requires a hard PATH-level guarantee that no orphan executable can ever appear, the install layout should move to stable shims or a content-addressed artifact store instead of direct final-path writes.</p>
+<p>SQL transactions serialize database state, but they do not make filesystem writes transactional. If two processes write the same path without coordination, the filesystem gives last-writer-wins behavior; it will not know which write matches the committed registry row. Typhoon therefore treats installed-tool mutation as a registry protocol, not a raw file copy. The normal mutation path is:</p>
+
+<ol>
+  <li>Start a TursoDB write transaction with <code>BEGIN IMMEDIATE</code>.</li>
+  <li>Acquire the per-tool filesystem lock.</li>
+  <li>Write the executable to a staging path outside the active PATH.</li>
+  <li>Verify permissions and checksum.</li>
+  <li>Write the registry, seed-memory, and proposal-status rows inside the open DB transaction.</li>
+  <li>Perform an atomic <code>rename(2)</code> into <code>~/.typhoon/bin/&lt;name&gt;</code>.</li>
+  <li>Commit the DB transaction, then release the filesystem lock.</li>
+</ol>
+
+<p>If a normal pre-commit step or commit fails while the process is alive, the DB transaction rolls back and Typhoon removes the staging/final file before releasing the lock. A crash can still leave filesystem leftovers because there is no real distributed transaction between TursoDB and the host filesystem. v0.1 chooses the DB as source of truth: no CLI is considered installed unless an approved registry row exists and its checksum matches the file on disk. <code>tool sync</code> removes unreferenced staging/final files and surfaces any active-row/checksum mismatch for operator repair. If a future version requires a hard PATH-level guarantee that no orphan executable can ever appear, the install layout should move to stable shims or a content-addressed artifact store instead of direct final-path writes.</p>
 
 <p><strong>Dream lock.</strong> The dream batch acquires <code>~/.typhoon/dream.lock</code> via filesystem locking before doing any work. A second invocation while the first holds the lock fails fast with a lock-error exit code. This guards both operator-invoked dream and cron-fired dream — the lock does not care who tried to start the second instance. The lock is process-scoped (released on process exit, even on crash), so a stale lock from a dead PID resolves itself; daemon health has no role in lock cleanup.</p>
 
@@ -444,14 +456,14 @@ flowchart TB
 <table>
   <thead><tr><th>Interface</th><th>Involved systems</th><th>Messages / activities</th><th>Rules</th></tr></thead>
   <tbody>
-    <tr><td>Channel turn</td><td>Channel service ↔ channel adapter ↔ Telegram gateway ↔ core</td><td>Fetch update, resolve peer, dispatch invocation, render reply</td><td>Gateway resolves <code>canonical_user_id</code> before core; service adapter owns protocol mechanics</td></tr>
+    <tr><td>Channel turn</td><td>Channel service ↔ channel adapter ↔ Telegram gateway ↔ core</td><td>Fetch update, resolve or onboard peer, dispatch invocation, render reply</td><td>Gateway resolves <code>canonical_user_id</code> before core; service adapter owns protocol mechanics</td></tr>
     <tr><td>External-agent endpoint</td><td>External agent CLI ↔ endpoint process ↔ core</td><td>Record signal, query memory, return structured CLI output</td><td>v0.1 defaults identity to operator unless a binding mechanism is added</td></tr>
-    <tr><td>Scheduled execution</td><td>Scheduler ↔ core / management process</td><td>Fire use-plane target through core; fire management target directly</td><td>Only use-plane targets produce signals; management targets are observed through their own tables</td></tr>
+    <tr><td>Scheduled execution</td><td>Scheduler ↔ core / management process / tool subprocess</td><td>Fire use-plane target through core, including tool subprocess execution when the target requires it; fire management target directly</td><td>Only use-plane targets produce signals; management targets are observed through their own tables</td></tr>
     <tr><td>LLM call</td><td>Core or dream ↔ LLM service adapter ↔ LLM service</td><td>Prompt request, tool-loop context, structured response</td><td>Application code never embeds provider wire formats; adapter is protocol-only</td></tr>
     <tr><td>State access</td><td>Application process ↔ data-access API ↔ data store</td><td>Memory query, registry lookup, proposal mutation, config mutation, identity lookup</td><td>All store access uses typed data-access APIs; multi-row writes use transactions</td></tr>
     <tr><td>Signal recording</td><td>Core ↔ signal recorder ↔ signal store</td><td>Persist invocation outcome and success tags</td><td>Core is the only process that drives the recorder</td></tr>
     <tr><td>Registry mutation</td><td>Tool manager ↔ data-access API ↔ TursoDB and filesystem</td><td>Approve, promote, rollback, enable, disable, delete, purge, sync</td><td>Operator-gated; DB is source of truth; filesystem mutation follows the registry protocol</td></tr>
-    <tr><td>Dream batch</td><td>Dream process ↔ data-access API / LLM adapter</td><td>Read signals and memories; produce memories and proposals; prune stale signals</td><td><code>dream.lock</code> enforces single batch; dream proposes but does not ratify</td></tr>
+    <tr><td>Dream batch</td><td>Dream process ↔ data-access API / LLM adapter</td><td>Read signals and memories; produce memories, CLI proposal briefs, and soul proposals; delete stale signals</td><td><code>dream.lock</code> enforces single batch; dream proposes but does not ratify</td></tr>
     <tr><td>Health inspection</td><td>Health inspector ↔ data-access API ↔ daemon state rows</td><td>Read gateway/cron liveness, heartbeat freshness, DB latency, recent recorder/dream status</td><td>Only gateway and scheduler have daemon health state</td></tr>
   </tbody>
 </table>
@@ -478,25 +490,35 @@ sequenceDiagram
     Channel->>Adapter: fetch_update(bot_token, offset)
     Adapter-->>Gateway: channel_update(peer_id, text, attachments)
     Gateway->>Identity: resolve_binding(channel, peer_id)
-    Identity-->>Gateway: canonical_user_id
-    Gateway->>Core: dispatch(invocation, canonical_user_id)
-    Core->>Data: query_memory(canonical_user_id, request)
-    Data-->>Core: memory_context
-    Core->>Data: lookup_active_tools()
-    Data-->>Core: tool_manifest
-    Core->>LLMAdapter: complete(prompt, memory_context, tool_manifest)
-    LLMAdapter->>LLM: provider_request(messages, tools)
-    LLM-->>LLMAdapter: provider_response(content, tool_calls)
-    LLMAdapter-->>Core: model_turn(content, tool_calls)
-    opt tool call requested
-      Core->>Tool: execute(tool_name, args, env)
-      Tool-->>Core: tool_result(exit_code, stdout, stderr)
+    alt bound peer
+      Identity-->>Gateway: canonical_user_id
+      Gateway->>Core: dispatch(invocation, canonical_user_id)
+      Core->>Data: query_memory(canonical_user_id, request)
+      Data-->>Core: memory_context
+      Core->>Data: lookup_active_tools()
+      Data-->>Core: tool_manifest
+      loop until final model turn
+        Core->>LLMAdapter: complete(prompt, memory_context, tool_manifest)
+        LLMAdapter->>LLM: provider_request(messages, tools)
+        LLM-->>LLMAdapter: provider_response(content, tool_calls)
+        LLMAdapter-->>Core: model_turn(content, tool_calls)
+        opt tool call requested
+          Core->>Tool: execute(tool_name, args, env)
+          Tool-->>Core: tool_result(exit_code, stdout, stderr)
+        end
+      end
+      Core->>Recorder: record_signal(invocation, result, success_tags)
+      Recorder->>Data: insert_signal(canonical_user_id, signal)
+      Core-->>Gateway: dispatch_result(reply)
+      Gateway->>Adapter: send_reply(peer_id, reply)
+      Adapter->>Channel: post_message(peer_id, reply)
+    else unbound peer
+      Identity-->>Gateway: binding_missing
+      Gateway->>Identity: create_onboarding_challenge(channel, peer_id)
+      Identity-->>Gateway: claim_token
+      Gateway->>Adapter: send_onboarding_prompt(peer_id, claim_token)
+      Adapter->>Channel: post_message(peer_id, onboarding_prompt)
     end
-    Core->>Recorder: record_signal(invocation, result, success_tags)
-    Recorder->>Data: insert_signal(canonical_user_id, signal)
-    Core-->>Gateway: dispatch_result(reply)
-    Gateway->>Adapter: send_reply(peer_id, reply)
-    Adapter->>Channel: post_message(peer_id, reply)
     Note over Gateway,Recorder: Core is the only caller that drives signal recording.
 </div>
 
@@ -511,13 +533,13 @@ sequenceDiagram
     participant Recorder as Signal recorder
 
     Agent->>Endpoint: signal_record(payload) / memory_query(request)
-    Endpoint->>Core: dispatch(endpoint_request, operator_user_id)
+    Endpoint->>Core: dispatch(endpoint_request, canonical_user_id)
     alt memory query
-      Core->>Data: query_memory(operator_user_id, request)
+      Core->>Data: query_memory(canonical_user_id, request)
       Data-->>Core: memory_results
     else signal record
       Core->>Recorder: record_signal(endpoint_request, result, success_tags)
-      Recorder->>Data: insert_signal(operator_user_id, signal)
+      Recorder->>Data: insert_signal(canonical_user_id, signal)
     end
     Core-->>Endpoint: endpoint_result(status, body)
     Endpoint-->>Agent: cli_output(status, body)
@@ -574,8 +596,9 @@ sequenceDiagram
       LLM-->>LLMAdapter: provider_response(structured_findings)
       LLMAdapter-->>Dream: findings
       Dream->>Data: upsert_memories(findings)
-      Dream->>Data: enqueue_proposals(requirements, forge_brief)
-      Dream->>Data: mark_signals_pruned(prune_policy)
+      Dream->>Data: enqueue_cli_proposals(forge_briefs)
+      Dream->>Data: enqueue_soul_proposals(soul_briefs)
+      Dream->>Data: delete_stale_signals(prune_window)
       Dream->>Lock: release(dream.lock)
       Dream-->>Trigger: dream_exit(success)
     else lock busy
@@ -599,20 +622,29 @@ sequenceDiagram
     Operator->>Manager: approve_tool(proposal_id)
     Manager->>Identity: assert_role(canonical_user_id, operator)
     Identity-->>Manager: role_ok
+    Manager->>Registry: begin_immediate()
     Manager->>Queue: load_proposal_for_update(proposal_id)
     Queue-->>Manager: proposal(requirements, artifact, checksum)
     Manager->>FS: lock_tool(tool_name)
     Manager->>FS: write_staging(tool_name, bytes)
     Manager->>FS: verify_checksum(staging_path, checksum)
-    Manager->>Registry: begin_registry_transaction()
     Manager->>Registry: insert_or_update_active_tool(tool_name, checksum)
     Manager->>Memory: write_seed_memory(tool_name, usage)
     Manager->>Queue: mark_approved(proposal_id)
     Manager->>FS: atomic_rename(staging_path, active_path)
-    Manager->>Registry: commit_registry_transaction()
-    Manager->>FS: unlock_tool(tool_name)
-    Manager-->>Operator: approval_result(tool_name, checksum)
-    Note over Manager,FS: DB is source of truth. Filesystem mutation follows the registry protocol.
+    Note over Manager,FS: Rename happens before commit so the active DB row never references a missing file.
+    alt commit succeeds
+      Manager->>Registry: commit()
+      Manager->>FS: unlock_tool(tool_name)
+      Manager-->>Operator: approval_result(tool_name, checksum)
+    else step before commit or commit fails
+      Manager->>Registry: rollback()
+      Manager->>FS: remove_staging_or_final(tool_name, checksum)
+      Manager->>FS: unlock_tool(tool_name)
+      Manager-->>Operator: approval_failed(error)
+    end
+    Note over Registry,Queue: BEGIN IMMEDIATE spans registry, seed memory, and proposal status writes.
+    Note over Manager,FS: DB is source of truth. Crash leftovers are repaired by tool sync.
 </div>
 
 <h5>Health inspection</h5>
@@ -622,16 +654,11 @@ sequenceDiagram
     participant Operator as Operator
     participant Health as Health inspector
     participant Data as Data-access APIs
-    participant DB as TursoDB
 
     Operator->>Health: health()
     Health->>Data: read_daemon_state(gateway, scheduler)
-    Data->>DB: select_daemon_rows(process_names)
-    DB-->>Data: daemon_rows
     Data-->>Health: liveness_and_heartbeat
     Health->>Data: measure_db_latency()
-    Data->>DB: ping()
-    DB-->>Data: pong()
     Data-->>Health: db_latency
     Health->>Data: read_recent_recorder_and_dream_status()
     Data-->>Health: recent_status
@@ -644,7 +671,7 @@ sequenceDiagram
 <table>
   <thead><tr><th>Check</th><th>Typhoon answer</th></tr></thead>
   <tbody>
-    <tr><td>Determine interfaces</td><td>The view lists channel, external-agent, scheduler, LLM, state-access, recorder, registry-mutation, dream, and health interfaces.</td></tr>
+    <tr><td>Determine interfaces</td><td>The interface table enumerates channel, external-agent, scheduler, LLM, state-access, recorder, registry-mutation, dream, and health interfaces; the structurally significant flows get sequence diagrams.</td></tr>
     <tr><td>Identify involved systems</td><td>Each sequence lists its involved systems as participants across the top row.</td></tr>
     <tr><td>Identify activities and control flow</td><td>Time runs downward; each activity appears in order under the responsible participant or as a message to the next participant.</td></tr>
     <tr><td>Define messages</td><td>Every cross-lane arrow carries a message signature such as <code>dispatch(invocation, canonical_user_id)</code>, <code>complete(prompt, memory_context, tool_manifest)</code>, or <code>approve_tool(proposal_id)</code>.</td></tr>
