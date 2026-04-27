@@ -193,60 +193,41 @@ flowchart TB
 
 <h3 id="sec-2-1">2.1 Layer view</h3>
 
-<p>The layer view uses the common architecture vocabulary a reader would expect from a web application: an interaction layer above an application layer above a persistence/integration layer above an external-systems layer. It is not a crate dependency map and not a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. The deepest layer includes both durable stores and external service endpoints: the durable stores are the source of truth for Typhoon state, while service endpoints are capabilities Typhoon calls but does not own. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
+<p>The layer view uses the common architecture vocabulary a reader would expect from a layered application. It is a bottom-up construction view: each floor exists to support the floor above it. It is not a request-flow diagram, a crate dependency map, or a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. The deepest layer includes both durable stores and external service endpoints: durable stores are the source of truth for Typhoon state, while service endpoints are capabilities Typhoon calls but does not own. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
 
 <div class="mermaid">
-flowchart TB
-    subgraph Interaction["Presentation / interaction layer"]
-      direction LR
-      I1["Receive external events"]
-      I2["Render responses"]
-    end
+flowchart BT
+    ExternalSystems["External systems layer<br/><i>durable stores, artifact stores,<br/>external service endpoints</i>"]
+    Integration["Persistence / integration layer<br/><i>typed state APIs,<br/>typed service APIs</i>"]
+    Domain["Domain / policy layer<br/><i>state transitions, scoping,<br/>role gates, lifecycle rules</i>"]
+    Application["Application / core layer<br/><i>use-case orchestration,<br/>use-plane and management-plane behavior</i>"]
+    Interaction["Presentation / interaction layer<br/><i>external events, requests,<br/>responses</i>"]
+    Foundation["Foundation sidecar<br/><i>cross-cutting primitives</i>"]
 
-    subgraph Application["Application / core layer"]
-      direction LR
-      A1["Orchestrate use cases"]
-      A2["Apply Typhoon policy"]
-    end
+    ExternalSystems --> Integration
+    Integration --> Domain
+    Domain --> Application
+    Application --> Interaction
 
-    subgraph Integration["Persistence / integration layer"]
-      direction LR
-      D1["Expose typed state APIs"]
-      D2["Expose typed service APIs"]
-    end
-
-    subgraph ExternalSystems["External systems layer"]
-      direction LR
-      S1["Persist durable records"]
-      S2["Persist durable artifacts"]
-      S3["Provide external services"]
-    end
-
-    subgraph Foundation["Foundation sidecar"]
-      direction LR
-      F["Cross-cutting primitives"]
-    end
-
-    Interaction --> Application
-    Application --> Integration
-    Integration --> ExternalSystems
-
-    Interaction -.uses.-> Foundation
-    Application -.uses.-> Foundation
-    Integration -.uses.-> Foundation
+    Foundation -.supports.-> Integration
+    Foundation -.supports.-> Domain
+    Foundation -.supports.-> Application
+    Foundation -.supports.-> Interaction
 </div>
 
 <p><strong>Presentation / interaction layer.</strong> Converts the outside world's events into internal requests and renders responses back out. It validates that a request is well-formed and extracts identity claims. It never decides whether the request's intent is permitted, and it never decides what durable state transition follows.</p>
 
-<p><strong>Application / core layer.</strong> Owns Typhoon's use cases and policy decisions: orchestration, state-transition intent, user scoping, role gates, retrieval policy, success tagging, and validation policy. The use-plane / management-plane split is a behavioral cut inside this layer, not a layer of its own. This layer asks for persistence and service capabilities through typed integration APIs; it does not write stores or call external services directly.</p>
+<p><strong>Application / core layer.</strong> Owns Typhoon's use cases and orchestration. It coordinates the use plane and management plane, sequences work, and invokes domain/policy operations. It does not own durable invariants, write stores, or call external services directly.</p>
 
-<p><strong>Persistence / integration layer.</strong> Exposes typed state APIs and typed service APIs to the application layer. For persistence, it owns schema shape, query boundaries, transaction composition, lock coordination, checksum reconciliation, and store-specific error translation. For external services, it owns client mechanics, request/response mapping, retries, and protocol-specific error translation. It does not decide user intent or Typhoon lifecycle policy; it enforces and executes decisions made by the application layer.</p>
+<p><strong>Domain / policy layer.</strong> Owns Typhoon's durable rules: state-transition validity, user scoping, role gates, retrieval policy, success tagging, validation policy, lifecycle rules, and the policy meaning of transactions and locks. It is the business floor of the system. It expresses what must be true; persistence/integration code handles how those facts are stored or external capabilities are reached.</p>
+
+<p><strong>Persistence / integration layer.</strong> Exposes typed state APIs and typed service APIs to the floors above. For persistence, it owns schema shape, query boundaries, transaction composition, lock coordination, checksum reconciliation, and store-specific error translation. For external services, it owns client mechanics, request/response mapping, retries, and protocol-specific error translation. It does not decide user intent or Typhoon lifecycle policy; it persists facts and reaches external capabilities according to decisions made above it.</p>
 
 <p><strong>External systems layer.</strong> Is the deepest layer. It contains durable data stores, durable artifact stores, and non-durable service endpoints. Durable stores provide database/filesystem atomicity guarantees and are the source of truth for persisted Typhoon state. Service endpoints provide capabilities, but they do not store Typhoon state and they do not know Typhoon lifecycle policy.</p>
 
 <p><strong>Foundation sidecar.</strong> Provides narrow primitives used everywhere, such as identity values, time, errors, and observability. It is drawn sideways because it is not a business layer and must stay small; it should never become a general-purpose "shared" bucket.</p>
 
-<p>Five boundaries are load-bearing. First, <strong>interaction stays thin</strong> — translate and render, do not decide. Second, <strong>application owns policy and orchestration</strong> — lifecycle decisions are not reimplemented at the edge or inside integration code. Third, <strong>integration is the only path to external systems</strong> — application code never writes stores or calls services directly. Fourth, <strong>durable stores store facts, not policy</strong>. Fifth, <strong>service clients stay protocol-only</strong> — capability, never Typhoon lifecycle policy. Foundation's rule is separate: stay narrow. The concrete static dependency view that enforces these rules in code is a DLD responsibility, not an HLD diagram.</p>
+<p>Five boundaries are load-bearing. First, <strong>interaction stays thin</strong> — translate and render, do not decide. Second, <strong>application orchestrates while domain owns policy</strong> — lifecycle rules are not reimplemented at the edge or inside integration code. Third, <strong>integration is the only path to external systems</strong> — upper layers never write stores or call services directly. Fourth, <strong>external systems store facts or provide capabilities, not policy</strong>. Fifth, <strong>service clients stay protocol-only</strong> — capability, never Typhoon lifecycle policy. Foundation's rule is separate: stay narrow. The concrete static dependency view that enforces these rules in code is a DLD responsibility, not an HLD diagram.</p>
 
 <h3 id="sec-2-2">2.2 Logical view (modules)</h3>
 
