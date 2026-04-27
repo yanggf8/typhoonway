@@ -20,6 +20,12 @@
   table { border-collapse: collapse; margin: .8rem 0; font-size: .95em; }
   th, td { border: 1px solid var(--rule); padding: .35rem .7rem; text-align: left; vertical-align: top; }
   th { background: #fafafa; }
+  .layer-matrix { width: 100%; border-collapse: separate; border-spacing: 0; }
+  .layer-matrix th, .layer-matrix td { border: 1px solid var(--rule); padding: .65rem .8rem; }
+  .layer-matrix .main-layer { width: 70%; }
+  .layer-matrix .foundation-layer { width: 30%; background: #fafafa; vertical-align: middle; }
+  .layer-matrix .layer-name { font-weight: 700; display: block; margin-bottom: .2rem; }
+  .layer-matrix .layer-note { color: var(--muted); }
   .mermaid { background: #fff; padding: .5rem 0; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
@@ -193,24 +199,28 @@ flowchart TB
 
 <h3 id="sec-2-1">2.1 Layer view</h3>
 
-<p>The layer view uses the common architecture vocabulary a reader would expect from a layered application. It is a bottom-up construction view: each floor exists to support the floor above it. It is not a request-flow diagram, a crate dependency map, or a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. The deepest layer includes both durable stores and external service endpoints: durable stores are the source of truth for Typhoon state, while service endpoints are capabilities Typhoon calls but does not own. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
+<p>The layer view uses the common architecture vocabulary a reader would expect from a layered application. It is a stack view: each row is a floor, and a floor may depend only on the row directly below it. It is not a request-flow diagram, a crate dependency map, or a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. Foundation is shown as a vertical side column because it supplies narrow primitives to the stack, but it is not itself a request path or a business floor. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
 
-<div class="mermaid">
-flowchart BT
-    ExternalSystems["External systems layer<br/><i>durable stores, artifact stores,<br/>external service endpoints</i>"]
-    Integration["Persistence / integration layer<br/><i>typed state APIs,<br/>typed service APIs</i>"]
-    Application["Application / core layer<br/><i>use-case orchestration,<br/>use-plane and management-plane behavior</i>"]
-    Interaction["Presentation / interaction layer<br/><i>external events, requests,<br/>responses</i>"]
-    Foundation["Foundation sidecar<br/><i>cross-cutting primitives</i>"]
-
-    ExternalSystems -->|supports| Integration
-    Integration -->|supports| Application
-    Application -->|supports| Interaction
-
-    Foundation -.supports.-> Integration
-    Foundation -.supports.-> Application
-    Foundation -.supports.-> Interaction
-</div>
+<table class="layer-matrix">
+  <thead>
+    <tr><th>Main architectural stack</th><th>Foundation side column</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="main-layer"><span class="layer-name">Presentation / interaction layer</span><span class="layer-note">External events, requests, responses.</span></td>
+      <td class="foundation-layer" rowspan="4"><span class="layer-name">Foundation</span><span class="layer-note">Shared primitives used by the stack: identity values, time, errors, observability, and other narrow utilities. Foundation must stay small and must not own workflow, persistence, or external-service behavior.</span></td>
+    </tr>
+    <tr>
+      <td class="main-layer"><span class="layer-name">Application / core layer</span><span class="layer-note">Use-case orchestration and runtime-plane coordination.</span></td>
+    </tr>
+    <tr>
+      <td class="main-layer"><span class="layer-name">Persistence / integration layer</span><span class="layer-note">Typed state APIs and typed service APIs.</span></td>
+    </tr>
+    <tr>
+      <td class="main-layer"><span class="layer-name">External systems layer</span><span class="layer-note">Durable stores, artifact stores, and external service endpoints.</span></td>
+    </tr>
+  </tbody>
+</table>
 
 <p><strong>Presentation / interaction layer.</strong> Converts the outside world's events into internal requests and renders responses back out. It validates that a request is well-formed and extracts identity claims. It does not own use-case decisions or durable work.</p>
 
