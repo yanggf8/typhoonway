@@ -40,7 +40,7 @@ HLD answers "what is the system / what are the responsibilities / what are the b
 
 7. **Verification per chapter.** Cross-cutting test strategy (fixture conventions, fake-clock policy, integration-test environment) lives in `DLD.md`. Per-feature tests live with the feature they verify. A separate Verification document becomes a graveyard of stale TODOs.
 
-8. **S5 written first.** S1–S4 reference S5's APIs; S5 must be stable before they can be reviewed. After S5 is signed off, S1–S4 can be reviewed in parallel.
+8. **S5A and S5D first; S5B and S5C can lag.** S1–S4 don't reference all of S5 equally. S5A (data-access APIs) is consumed by every subsystem; S5D (transaction/lock primitives) is composed by every subsystem that mutates state. Together they are the sign-off blocker. S5B (storage adapters) is internal to S5A — S1–S4 don't see it directly, so it may follow alongside S5A. S5C (service adapters) is consumed only by S2 (channels) and S3 (LLM calls), so it may be drafted in parallel with S2.
 
 9. **Forge contract gets its own subheader inside S4.** v0.1 forge is operator-driven outside Typhoon, but the handoff (`tool propose submit` accepts requirements + source + tests + path-lint pass) is a contract Typhoon enforces. Don't bury it inside the lifecycle subsection.
 
@@ -74,7 +74,7 @@ DLD.md
   ## S4 — Registry management
 ```
 
-Section order is review order, not authoring order — Data Model and S5 first; S1–S4 may be drafted in parallel once S5's API surface stabilises.
+Section order is review order, not authoring order — Data Model and S5A first; S1–S4 may be drafted in parallel once S5A's API surface stabilises. S5 chapters are listed alphabetically so S5A (the surface S1–S4 consume) appears first; DLD authors may use a dependency-first internal order when writing chapter content (S5D primitives → S5B storage adapters → S5A APIs → S5C service adapters).
 
 ## Per-subsystem chapter template
 
@@ -101,7 +101,7 @@ These are decisions that should be stated up front, not rediscovered per chapter
 - **No `anyhow` in library crates.** Already in HLD §2.5; restate.
 - **No `tokio::main` in library crates.** Async-runtime choice is binary-level. (Already in HLD §2.5.)
 - **Per-row `canonical_user_id` enforcement.** Every data-access API for per-user state takes `canonical_user_id` and filters every read and write — verified by test, not by convention.
-- **Review order.** S5 (data-access APIs, storage adapters, service adapters, transaction/lock primitives) is sign-off blocker for S1–S4. After S5 is stable, the other four are independent.
+- **Review order.** S5A (data-access APIs) and S5D (transaction/lock primitives) are the sign-off blocker for S1–S4. S5B (storage adapters) may follow alongside S5A; S5C (service adapters) may be drafted in parallel with S2. After S5A and S5D are stable, S1–S4 are independent.
 
 ## Open decisions for DLD-time
 
@@ -124,4 +124,4 @@ These don't need to be settled before drafting starts but should be tracked:
 
 ## Next action
 
-Land HLD review cycle (in progress). Once HLD is approved, draft `DLD.md` starting with conventions chapter and Data Model, then S5A. S5B–S5D follow as the supporting adapter and primitive chapters; subsystem chapters S1–S4 follow once S5 API surface is stable.
+Land HLD review cycle (in progress). Once HLD is approved, draft `DLD.md` starting with conventions chapter and Data Model, then S5A and S5D in parallel (these are the blockers for S1–S4). S5B follows alongside S5A; S5C may be drafted in parallel with S2. Subsystem chapters S1–S4 follow once S5A's API surface is stable.
