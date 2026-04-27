@@ -22,8 +22,10 @@
   th { background: #fafafa; }
   .layer-matrix { width: 100%; border-collapse: separate; border-spacing: 0; }
   .layer-matrix th, .layer-matrix td { border: 1px solid var(--rule); padding: .65rem .8rem; }
-  .layer-matrix .main-layer { width: 70%; }
-  .layer-matrix .foundation-layer { width: 30%; background: #fafafa; vertical-align: middle; }
+  .layer-matrix .external-layer { width: 22%; background: #fafafa; vertical-align: middle; }
+  .layer-matrix .adapter-layer { width: 22%; background: #fcfcfc; vertical-align: middle; }
+  .layer-matrix .main-layer { width: 34%; }
+  .layer-matrix .foundation-layer { width: 22%; background: #fafafa; vertical-align: middle; }
   .layer-matrix .layer-name { font-weight: 700; display: block; margin-bottom: .2rem; }
   .layer-matrix .layer-note { color: var(--muted); }
   .mermaid { background: #fff; padding: .5rem 0; }
@@ -199,14 +201,16 @@ flowchart TB
 
 <h3 id="sec-2-1">2.1 Layer view</h3>
 
-<p>The layer view uses the common architecture vocabulary a reader would expect from a layered application. It is a stack view: each row is a floor, and a floor may depend only on the row directly below it. It is not a request-flow diagram, a crate dependency map, or a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. Foundation is shown as a vertical side column because it supplies narrow primitives to the stack, but it is not itself a request path or a business floor. Non-storage service integrations are not treated as a floor in this view; they are described in the logical and subsystem views as adapters used by the application. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
+<p>The layer view uses the common architecture vocabulary a reader would expect from a layered application. It is a stack view: each row is a floor, and a floor may depend only on the row directly below it. It is not a request-flow diagram, a crate dependency map, or a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. The access row is split into two blocks: service adapters for non-storage external services, and data access for Typhoon state. External systems are shown as a side column and attach only through the service-adapter block; they are not the data-store layer. Foundation is shown as a vertical side column because it supplies narrow primitives to the stack, but it is not itself a request path or a business floor. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
 
 <table class="layer-matrix">
   <thead>
-    <tr><th>Main architectural stack</th><th>Foundation side column</th></tr>
+    <tr><th>External systems</th><th>Service adapter block</th><th>Main architectural stack</th><th>Foundation side column</th></tr>
   </thead>
   <tbody>
     <tr>
+      <td class="external-layer" rowspan="2"></td>
+      <td class="adapter-layer" rowspan="2"></td>
       <td class="main-layer"><span class="layer-name">Presentation / interaction layer</span><span class="layer-note">External events, requests, responses.</span></td>
       <td class="foundation-layer" rowspan="4"><span class="layer-name">Foundation</span><span class="layer-note">Shared primitives used by the stack: identity values, time, errors, observability, and other narrow utilities. Foundation must stay small and must not own workflow, data access, storage, or service behavior.</span></td>
     </tr>
@@ -214,9 +218,13 @@ flowchart TB
       <td class="main-layer"><span class="layer-name">Application / core layer</span><span class="layer-note">Use-case orchestration and runtime-plane coordination.</span></td>
     </tr>
     <tr>
+      <td class="external-layer"><span class="layer-name">External services</span><span class="layer-note">Non-storage services reached through adapters, such as channel APIs and LLM APIs.</span></td>
+      <td class="adapter-layer"><span class="layer-name">Service adapters</span><span class="layer-note">Typed clients for non-storage services.</span></td>
       <td class="main-layer"><span class="layer-name">Data access layer</span><span class="layer-note">Typed APIs for reading and writing Typhoon state.</span></td>
     </tr>
     <tr>
+      <td class="external-layer"></td>
+      <td class="adapter-layer"></td>
       <td class="main-layer"><span class="layer-name">Data store layer</span><span class="layer-note">Database and artifact storage that hold Typhoon state.</span></td>
     </tr>
   </tbody>
@@ -224,15 +232,19 @@ flowchart TB
 
 <p><strong>Presentation / interaction layer.</strong> Converts the outside world's events into internal requests and renders responses back out. It validates that a request is well-formed and extracts identity claims. It does not own use-case decisions or durable work.</p>
 
-<p><strong>Application / core layer.</strong> Owns Typhoon's use cases and orchestration. It coordinates the use plane and management plane, sequences work, validates workflow preconditions, and invokes typed data-access APIs. It does not write stores directly.</p>
+<p><strong>Application / core layer.</strong> Owns Typhoon's use cases and orchestration. It coordinates the use plane and management plane, sequences work, validates workflow preconditions, and invokes typed data-access APIs or service adapters. It does not write stores directly and does not speak external service protocols directly.</p>
 
-<p><strong>Data access layer.</strong> Exposes typed state APIs to the floors above. It owns schema shape, query boundaries, transaction composition, coordination primitives, and store-specific error translation. It does not decide user intent or own use-case orchestration; it persists and retrieves facts according to decisions made above it.</p>
+<p><strong>Data access layer.</strong> Exposes typed state APIs to the floors above. It owns schema shape, query boundaries, transaction composition, coordination primitives, and store-specific error translation. It does not decide user intent or own use-case orchestration; it persists and retrieves facts according to decisions made above it. It is the only block that talks to the data store layer.</p>
 
-<p><strong>Data store layer.</strong> The deepest layer contains the database and artifact storage that hold Typhoon state. This is the normal database/storage floor of the architecture, not an "external systems" bucket.</p>
+<p><strong>Service adapter block.</strong> Sits beside the data-access layer because it is an adapter boundary, not a data floor. It owns request/response mapping, retries, and protocol-specific error translation for non-storage services. It is the only block that talks to the external-systems side column; it does not write the data store.</p>
+
+<p><strong>Data store layer.</strong> The deepest layer contains the database and artifact storage that hold Typhoon state. It is reached only through the data-access layer. This is the normal database/storage floor of the architecture, not an "external systems" bucket.</p>
+
+<p><strong>External systems side column.</strong> Contains non-storage systems Typhoon may call through service adapters. The current examples are channel APIs and LLM APIs. External systems do not attach to presentation, application, or data store directly in this layer view.</p>
 
 <p><strong>Foundation sidecar.</strong> Provides narrow primitives used everywhere, such as identity values, time, errors, and observability. It is a side concern rather than a business floor and must stay small; it should never become a general-purpose "shared" bucket.</p>
 
-<p>Four boundaries are load-bearing. First, <strong>interaction stays thin</strong> — translate and render, do not decide. Second, <strong>application owns workflow decisions</strong> — use-case decisions live with the use cases that apply them, not at the edge. Third, <strong>data access is the only path to stores</strong> — upper layers never write the database or artifact storage directly. Fourth, <strong>stores hold facts, not Typhoon behavior</strong>. Foundation's rule is separate: stay narrow. Service integrations such as channel APIs and LLM APIs are adapter concerns described outside this stack. The concrete static dependency view that enforces these rules in code is a DLD responsibility, not an HLD diagram.</p>
+<p>Five boundaries are load-bearing. First, <strong>interaction stays thin</strong> — translate and render, do not decide. Second, <strong>application owns workflow decisions</strong> — use-case decisions live with the use cases that apply them, not at the edge. Third, <strong>data access is the only path to stores</strong> — upper layers never write the database or artifact storage directly. Fourth, <strong>service adapters are the only path to external services</strong> — upper layers never speak channel or LLM wire protocols directly. Fifth, <strong>stores hold facts, not Typhoon behavior</strong>. Foundation's rule is separate: stay narrow. The concrete static dependency view that enforces these rules in code is a DLD responsibility, not an HLD diagram.</p>
 
 <h3 id="sec-2-2">2.2 Logical view (modules)</h3>
 
