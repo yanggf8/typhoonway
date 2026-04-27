@@ -703,6 +703,48 @@ sequenceDiagram
   </tbody>
 </table>
 
+<p>The top-level subsystem count stays at five. A system named in the §2.3 sequence diagrams is not automatically a subsystem: it may be an external actor, an owned Typhoon process, a typed S5 API group, or a store/adapter capability. Below a subsystem, this HLD uses the term <strong>component group</strong> for a coherent internal area that can become a DLD subsection. Component groups are not child subsystems; they are review-sized parts inside one subsystem boundary.</p>
+
+<h4>Process participant to subsystem mapping</h4>
+
+<table>
+  <thead>
+    <tr><th>§2.3 participant</th><th>Subsystem owner</th><th>Component group / role</th><th>Boundary rule</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Operator, External agent CLI</td><td>Outside Typhoon</td><td>Human or external caller</td><td>Enter through S1, S2, or S4 command surfaces; never call data-access APIs directly</td></tr>
+    <tr><td>Channel service, LLM service</td><td>Outside Typhoon</td><td>External service endpoint</td><td>Reached only through S5 service adapters</td></tr>
+    <tr><td>Telegram gateway</td><td>S2 — Channels &amp; dispatch</td><td>Channel ingress component group</td><td>Resolves identity, normalises input, invokes core; protocol mechanics stay in S5 adapters</td></tr>
+    <tr><td>External-agent endpoint</td><td>S2 — Channels &amp; dispatch</td><td>CLI ingress component group</td><td>Validates endpoint input, resolves/defaults identity, invokes core</td></tr>
+    <tr><td>Scheduler</td><td>S2 — Channels &amp; dispatch</td><td>Schedule dispatch component group</td><td>Use-plane targets go through core; management-plane targets are spawned directly</td></tr>
+    <tr><td>Core dispatcher</td><td>S2 — Channels &amp; dispatch</td><td>Use-plane orchestration component group</td><td>Owns use invocation flow and is the only caller that drives the recorder</td></tr>
+    <tr><td>Signal recorder</td><td>S2 — Channels &amp; dispatch</td><td>Recording component group</td><td>Sole writer to signal store, driven only by core</td></tr>
+    <tr><td>Forged tool subprocess</td><td>Runtime artifact, not a subsystem</td><td>Installed executable selected from registry</td><td>S2 executes it during use-plane dispatch; S4/S5 own lifecycle and registry facts</td></tr>
+    <tr><td>Dream batch</td><td>S3 — Self-growth</td><td>Dream pipeline component group</td><td>Owns signal analysis, memory/proposal emission, and the single-batch rule</td></tr>
+    <tr><td>Tool manager</td><td>S4 — Registry management</td><td>Tool proposal and lifecycle component group</td><td>Operator-gated; orchestrates forge intake, ratification, and installed-tool mutation</td></tr>
+    <tr><td>Health inspector</td><td>S1 — Platform</td><td>Observability component group</td><td>Read-only; observes gateway and scheduler daemon state</td></tr>
+    <tr><td>Identity bindings, Proposal queue, Tool registry, Memory store, Signal store, Config</td><td>S5 — Data access &amp; adapters</td><td>Data-access component group</td><td>Typed state APIs; enforce scoping, role lookup, transactions, retrieval bounds, and lineage</td></tr>
+    <tr><td>Data-access APIs</td><td>S5 — Data access &amp; adapters</td><td>Umbrella participant for data-access libraries</td><td>Only path from application subsystems to Typhoon stores</td></tr>
+    <tr><td>Channel adapter, LLM adapter</td><td>S5 — Data access &amp; adapters</td><td>Service-adapter component group</td><td>Protocol-only clients; no Typhoon lifecycle decisions</td></tr>
+    <tr><td>Filesystem, filesystem lock</td><td>Not a subsystem; accessed through S5</td><td>Host artifact store and lock target</td><td>S5 provides filesystem and lock mechanics; owning subsystem decides why a lock is taken</td></tr>
+  </tbody>
+</table>
+
+<h4>Subsystem component groups</h4>
+
+<table>
+  <thead>
+    <tr><th>Subsystem</th><th>Component groups for DLD organisation</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>S1 — Platform</td><td>Bootstrap and migration; identity administration; health and daemon observability</td></tr>
+    <tr><td>S2 — Channels &amp; dispatch</td><td>Channel ingress; external-agent ingress; scheduler; core dispatcher; signal recorder</td></tr>
+    <tr><td>S3 — Self-growth</td><td>Dream orchestration; light / REM / deep analysis phases; memory and proposal emission; dream lock usage</td></tr>
+    <tr><td>S4 — Registry management</td><td>Tool proposal intake and forge delivery; tool lifecycle; soul proposal lifecycle; role gates and path lint</td></tr>
+    <tr><td>S5 — Data access &amp; adapters</td><td>Data-access APIs; storage adapters; service adapters; transaction and lock primitives</td></tr>
+  </tbody>
+</table>
+
 <h4>S1 — Platform</h4>
 <p>The platform subsystem covers everything required to stand a Typhoon instance up, identify its users, and keep daemons observable. Bootstrap is one-shot — connect to the operator-provided TursoDB URL/token, run schema migrations, seed config, and seed the operator as the first canonical user with operator role; re-runs are idempotent. The platform also owns the operator-facing identity-binding management commands (list bindings, revoke a binding, mint an onboarding invite), which read and write through S5's Identity bindings library. <code>typhoon health</code> is a read-only one-shot that reports gateway and scheduler liveness/heartbeat state, DB latency, and recent recorder/dream status. The DLD chapter for S1 covers the migration scheme (versioned, additive-only), the seed inventory (including the operator seed shape), the binding management command grammar, the binding-verification mechanics (claim tokens, expiry, nonce), the daemon heartbeat rows, and the health output format.</p>
 
@@ -710,14 +752,14 @@ sequenceDiagram
 <p>S2 is the entire use plane in one subsystem. It owns every path that brings external work into Typhoon (Telegram long-poll, external-agent one-shots, cron-fired use entries), the core dispatcher that orchestrates that work, and the signal recorder that persists one signal per invocation. Two defining invariants are enforced here: "core is the only thing that drives the recorder," and "every invocation reaching core carries a resolved <code>canonical_user_id</code>." Gateways resolve identity via S5's Identity bindings before invoking core; the external-agent endpoints default to the operator. The DLD chapter for S2 covers the gateway protocol handling, the binding-resolution and onboarding flow for unbound peers, the agent loop's tool-dispatch sequence, the cron entry format and tick semantics, the external-agent endpoint contracts (input shape, exit codes, identity defaulting), the core's dispatch interface, and the recorder's write protocol (signal row tagged with <code>canonical_user_id</code>).</p>
 
 <h4>S3 — Self-growth</h4>
-<p>S3 is just the dream batch, but it is large and stands alone because of its scoring logic and its three-phase pipeline. Light, REM, and deep phases run sequentially; each emits structured outputs the next consumes. Dream reads from S5 (signal store, memory store, tool registry, existing proposals) and writes back through S5 (memory store, proposal queue) — it never calls into S2 or S4 directly. The file lock that makes dream a single-writer is part of this subsystem. The DLD chapter for S3 covers each phase's input/output contracts, the scoring formulas and weights, the LLM prompts for the deep phase, the soul-proposal generation rules, the stale-signal prune policy, and the cron-entry seeding.</p>
+<p>S3 is just the dream batch, but it is large and stands alone because of its scoring logic and its three-phase pipeline. Light, REM, and deep phases run sequentially; each emits structured outputs the next consumes. Dream reads from S5 (signal store, memory store, tool registry, existing proposals) and writes back through S5 (memory store, proposal queue) — it never calls into S2 or S4 directly. The single-writer policy belongs to S3; S5 provides the filesystem lock primitive. The DLD chapter for S3 covers each phase's input/output contracts, the scoring formulas and weights, the LLM prompts for the deep phase, the soul-proposal generation rules, the stale-signal prune policy, and the cron-entry seeding.</p>
 
 <h4>S4 — Registry management</h4>
 <p>S4 owns the operator-driven advancement of proposals into the registry. Tool manager covers the unified <code>typhoon tool</code> namespace (proposal flow with required forge delivery fields and path lint, plus full lifecycle operations on installed tools); every mutation gates on the operator role. Proposal submit attaches forge output to <code>cli_proposals</code>; approval is the first operation that mutates the installed-tool registry. Soul manager is the per-user flow for soul proposals — a user may approve their own, the operator may approve any — with atomic per-user config mutation on approval. Both managers query S5's Identity bindings for the role check, then compose against the proposal queue and the corresponding storage library (tool registry for one, config for the other), and both rely on the registry mutation protocol from §2.3 wherever a filesystem write is involved. The DLD chapter for S4 covers the proposal state-machine transitions, path-lint implementation, the role-check policy at every subcommand, the operator-CLI command grammar and exit codes, the atomic-mutation transaction shapes, the lineage-and-history rules, the 3-strike rejection tracking (per pattern for cli proposals; per <code>(canonical_user_id, config_key)</code> for soul), and the promote-script (hand-written tool adoption) flow.</p>
 
 <h4>S5 — Data access &amp; adapters</h4>
 <p>S5 is the lower implementation subsystem that contains Typhoon's data-access libraries and typed adapters. Data-access libraries (tool registry, memory store, signal store, proposal queue, config, identity bindings) own persistence mechanics and typed state APIs — atomicity, retrieval bounds, success fields, type validation, lineage persistence, verified-binding rows, the shared-vs-per-user data scoping, and role lookup. Storage adapters own driver mechanics for the data-store layer. Service adapters own the protocols for non-storage services such as channel APIs and LLM APIs. The important boundary is that application code uses typed APIs and adapters; it does not embed SQL, filesystem driver details, channel wire formats, or LLM provider request formats. The DLD chapter for S5 covers the SQL schema (DDL — including the canonical-user table, binding table, and per-user vs system config split), each library's API surface (which APIs take <code>canonical_user_id</code> and which do not), the registry mutation protocol, transaction primitives, lock primitives, every adapter's external interface, and the exact static dependency view that enforces the boundary in code.</p>
-<p>Because S5 is intentionally broad, the DLD may split its chapter along the same seam as §2.5: data-access libraries in one subchapter, adapters in another.</p>
+<p>Because S5 is intentionally broad, the DLD may split its chapter by component group: data-access APIs, storage adapters, service adapters, and transaction/lock primitives.</p>
 
 <h4>Subsystem dependencies</h4>
 
@@ -741,12 +783,13 @@ flowchart TB
 
 <h4>Why this partitioning</h4>
 
-<p>Three properties make this set of subsystems suitable as DLD chapter boundaries.</p>
+<p>Four properties make this set of subsystems suitable as DLD chapter boundaries.</p>
 
 <ol>
   <li><strong>Each subsystem has a single headline responsibility</strong> that can be understood without referring to the others. Anyone reviewing the S3 chapter can do so without knowing the gateway protocol; anyone reviewing S2 can do so without knowing dream's scoring weights.</li>
   <li><strong>Cross-subsystem coupling is bounded and explicit.</strong> S2 / S3 / S4 / S1 all depend on S5; S1 additionally observes S2's daemons; otherwise nothing crosses. This makes each chapter a small surface-area read.</li>
   <li><strong>The runtime planes from §2.3 fall along these boundaries.</strong> S2 is the use plane in its entirety; S3, S4, and the operator-facing slice of S1 are management plane. The split this HLD treats as load-bearing remains visible at the DLD level rather than being smeared across chapters.</li>
+  <li><strong>Process-view participants have clear owners without becoming new subsystems.</strong> Sequence participants from §2.3 map either to a top-level subsystem-owned component group, to S5's access/adapters boundary, or to an external actor/service. This keeps the subsystem count manageable while still giving DLD authors a concrete hierarchy.</li>
 </ol>
 
 <h3 id="sec-2-5">2.5 Project layout (workspace, crates, cross-cutting concerns)</h3>
