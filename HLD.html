@@ -581,7 +581,7 @@ sequenceDiagram
     else lock busy
       Dream-->>Trigger: dream_exit(lock_error)
     end
-    Note over Dream,Data: Dream proposes new work; ratification remains outside dream.
+    Note over Dream,Data: Dream proposes new work. Ratification remains outside dream.
 </div>
 
 <h5>Registry mutation</h5>
@@ -612,7 +612,7 @@ sequenceDiagram
     Manager->>Registry: commit_registry_transaction()
     Manager->>FS: unlock_tool(tool_name)
     Manager-->>Operator: approval_result(tool_name, checksum)
-    Note over Manager,FS: DB is source of truth; filesystem mutation follows the registry protocol.
+    Note over Manager,FS: DB is source of truth. Filesystem mutation follows the registry protocol.
 </div>
 
 <h5>Health inspection</h5>
