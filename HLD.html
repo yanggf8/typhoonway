@@ -22,10 +22,11 @@
   th { background: #fafafa; }
   .layer-matrix { width: 100%; border-collapse: separate; border-spacing: 0; }
   .layer-matrix th, .layer-matrix td { border: 1px solid var(--rule); padding: .65rem .8rem; }
-  .layer-matrix .external-layer { width: 22%; background: #fafafa; vertical-align: middle; }
-  .layer-matrix .adapter-layer { width: 22%; background: #fcfcfc; vertical-align: middle; }
-  .layer-matrix .main-layer { width: 34%; }
-  .layer-matrix .foundation-layer { width: 22%; background: #fafafa; vertical-align: middle; }
+  .layer-matrix .external-layer { width: 23%; background: #fafafa; vertical-align: middle; }
+  .layer-matrix .main-layer { width: 54%; }
+  .layer-matrix .foundation-layer { width: 23%; background: #fafafa; vertical-align: middle; }
+  .layer-matrix .integration-blocks { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin-top: .45rem; }
+  .layer-matrix .integration-block { border: 1px solid var(--rule); padding: .45rem .55rem; background: #fcfcfc; }
   .layer-matrix .layer-name { font-weight: 700; display: block; margin-bottom: .2rem; }
   .layer-matrix .layer-note { color: var(--muted); }
   .mermaid { background: #fff; padding: .5rem 0; }
@@ -201,16 +202,15 @@ flowchart TB
 
 <h3 id="sec-2-1">2.1 Layer view</h3>
 
-<p>The layer view uses the common architecture vocabulary a reader would expect from a layered application. It is a stack view: each row is a floor, and a floor may depend only on the row directly below it. It is not a request-flow diagram, a crate dependency map, or a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. The access row is split into two blocks: service adapters for non-storage external services, and data access for Typhoon state. External systems are shown as a side column and attach only through the service-adapter block; they are not the data-store layer. Foundation is shown as a vertical side column because it supplies narrow primitives to the stack, but it is not itself a request path or a business floor. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
+<p>The layer view uses the common architecture vocabulary a reader would expect from a layered application. It is a stack view: each row is a floor, and a floor may depend only on the row directly below it. It is not a request-flow diagram, a crate dependency map, or a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. The integration layer is split into two blocks: service adapters for non-storage external services, and data access for Typhoon state. External systems are shown as a side column and attach only through the service-adapter block; they are not the data-store layer. Foundation is shown as a vertical side column because it supplies narrow primitives to the stack, but it is not itself a request path or a business floor. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
 
 <table class="layer-matrix">
   <thead>
-    <tr><th>External systems</th><th>Service adapter block</th><th>Main architectural stack</th><th>Foundation side column</th></tr>
+    <tr><th>External systems</th><th>Main architectural stack</th><th>Foundation side column</th></tr>
   </thead>
   <tbody>
     <tr>
       <td class="external-layer" rowspan="2"></td>
-      <td class="adapter-layer" rowspan="2"></td>
       <td class="main-layer"><span class="layer-name">Presentation / interaction layer</span><span class="layer-note">External events, requests, responses.</span></td>
       <td class="foundation-layer" rowspan="4"><span class="layer-name">Foundation</span><span class="layer-note">Shared primitives used by the stack: identity values, time, errors, observability, and other narrow utilities. Foundation must stay small and must not own workflow, data access, storage, or service behavior.</span></td>
     </tr>
@@ -219,12 +219,17 @@ flowchart TB
     </tr>
     <tr>
       <td class="external-layer"><span class="layer-name">External services</span><span class="layer-note">Non-storage services reached through adapters, such as channel APIs and LLM APIs.</span></td>
-      <td class="adapter-layer"><span class="layer-name">Service adapters</span><span class="layer-note">Typed clients for non-storage services.</span></td>
-      <td class="main-layer"><span class="layer-name">Data access layer</span><span class="layer-note">Typed APIs for reading and writing Typhoon state.</span></td>
+      <td class="main-layer">
+        <span class="layer-name">Integration layer</span>
+        <span class="layer-note">Boundary for data stores and non-storage services.</span>
+        <div class="integration-blocks">
+          <div class="integration-block"><span class="layer-name">Service adapters</span><span class="layer-note">Typed clients for non-storage services.</span></div>
+          <div class="integration-block"><span class="layer-name">Data access</span><span class="layer-note">Typed APIs for reading and writing Typhoon state.</span></div>
+        </div>
+      </td>
     </tr>
     <tr>
       <td class="external-layer"></td>
-      <td class="adapter-layer"></td>
       <td class="main-layer"><span class="layer-name">Data store layer</span><span class="layer-note">Database and artifact storage that hold Typhoon state.</span></td>
     </tr>
   </tbody>
@@ -232,11 +237,13 @@ flowchart TB
 
 <p><strong>Presentation / interaction layer.</strong> Converts the outside world's events into internal requests and renders responses back out. It validates that a request is well-formed and extracts identity claims. It does not own use-case decisions or durable work.</p>
 
-<p><strong>Application / core layer.</strong> Owns Typhoon's use cases and orchestration. It coordinates the use plane and management plane, sequences work, validates workflow preconditions, and invokes typed data-access APIs or service adapters. It does not write stores directly and does not speak external service protocols directly.</p>
+<p><strong>Application / core layer.</strong> Owns Typhoon's use cases and orchestration. It coordinates the use plane and management plane, sequences work, validates workflow preconditions, and invokes the integration layer. It does not write stores directly and does not speak external service protocols directly.</p>
 
-<p><strong>Data access layer.</strong> Exposes typed state APIs to the floors above. It owns schema shape, query boundaries, transaction composition, coordination primitives, and store-specific error translation. It does not decide user intent or own use-case orchestration; it persists and retrieves facts according to decisions made above it. It is the only block that talks to the data store layer.</p>
+<p><strong>Integration layer.</strong> Contains two blocks with different responsibilities. The service-adapter block reaches non-storage external services. The data-access block reaches Typhoon's data stores. Keeping both blocks in one layer says they are both boundary code below application, while keeping them separate says service calls and state persistence are not the same concern.</p>
 
-<p><strong>Service adapter block.</strong> Sits beside the data-access layer because it is an adapter boundary, not a data floor. It owns request/response mapping, retries, and protocol-specific error translation for non-storage services. It is the only block that talks to the external-systems side column; it does not write the data store.</p>
+<p><strong>Service adapter block.</strong> Owns request/response mapping, retries, and protocol-specific error translation for non-storage services. It is the only block that talks to the external-systems side column; it does not write the data store.</p>
+
+<p><strong>Data access block.</strong> Exposes typed state APIs to the floors above. It owns schema shape, query boundaries, transaction composition, coordination primitives, and store-specific error translation. It does not decide user intent or own use-case orchestration; it persists and retrieves facts according to decisions made above it. It is the only block that talks to the data store layer.</p>
 
 <p><strong>Data store layer.</strong> The deepest layer contains the database and artifact storage that hold Typhoon state. It is reached only through the data-access layer. This is the normal database/storage floor of the architecture, not an "external systems" bucket.</p>
 
