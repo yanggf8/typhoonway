@@ -703,7 +703,9 @@ sequenceDiagram
   </tbody>
 </table>
 
-<p>The top-level subsystem count stays at five. A system named in the §2.3 sequence diagrams is not automatically a subsystem: it may be an external actor, an owned Typhoon process, a typed S5 API group, or a store/adapter capability. Below a subsystem, this HLD uses the term <strong>component group</strong> for a coherent internal area that can become a DLD subsection. Component groups are not child subsystems; they are review-sized parts inside one subsystem boundary.</p>
+<p>The top-level subsystem count stays at five. A system named in the §2.3 sequence diagrams is not automatically a subsystem: it may be an external actor, an owned Typhoon process, a typed S5 API group, or a store/adapter capability. Below a subsystem, this HLD uses the term <strong>component group</strong> for a coherent internal area that can become a DLD subsection. Component groups are not child subsystems; they are review-sized parts inside one subsystem boundary. They may span more than one §2.2 module when those modules cooperate on one concern, and one §2.2 module's responsibilities may be split across more than one component group.</p>
+
+<p>§2.3 names individual data-access libraries when the participant relationship is load-bearing, such as a role check through Identity bindings or an approval update through Proposal queue. It uses the umbrella <em>Data-access APIs</em> participant when the specific library is not important to the sequence.</p>
 
 <h4>Process participant to subsystem mapping</h4>
 
