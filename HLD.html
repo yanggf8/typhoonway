@@ -199,7 +199,7 @@ flowchart TB
 
 <h3 id="sec-2-1">2.1 Layer view</h3>
 
-<p>The layer view uses the common architecture vocabulary a reader would expect from a layered application. It is a stack view: each row is a floor, and a floor may depend only on the row directly below it. It is not a request-flow diagram, a crate dependency map, or a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. Foundation is shown as a vertical side column because it supplies narrow primitives to the stack, but it is not itself a request path or a business floor. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
+<p>The layer view uses the common architecture vocabulary a reader would expect from a layered application. It is a stack view: each row is a floor, and a floor may depend only on the row directly below it. It is not a request-flow diagram, a crate dependency map, or a module catalog. It deliberately avoids concrete technology, concrete commands, and concrete subsystems. Foundation is shown as a vertical side column because it supplies narrow primitives to the stack, but it is not itself a request path or a business floor. Non-storage service integrations are not treated as a floor in this view; they are described in the logical and subsystem views as adapters used by the application. The static dependency view is intentionally not specified here; it belongs in the DLD, where exact crate edges and manifest rules can be reviewed against implementation.</p>
 
 <table class="layer-matrix">
   <thead>
@@ -208,35 +208,35 @@ flowchart TB
   <tbody>
     <tr>
       <td class="main-layer"><span class="layer-name">Presentation / interaction layer</span><span class="layer-note">External events, requests, responses.</span></td>
-      <td class="foundation-layer" rowspan="4"><span class="layer-name">Foundation</span><span class="layer-note">Shared primitives used by the stack: identity values, time, errors, observability, and other narrow utilities. Foundation must stay small and must not own workflow, persistence, or external-service behavior.</span></td>
+      <td class="foundation-layer" rowspan="4"><span class="layer-name">Foundation</span><span class="layer-note">Shared primitives used by the stack: identity values, time, errors, observability, and other narrow utilities. Foundation must stay small and must not own workflow, data access, storage, or service behavior.</span></td>
     </tr>
     <tr>
       <td class="main-layer"><span class="layer-name">Application / core layer</span><span class="layer-note">Use-case orchestration and runtime-plane coordination.</span></td>
     </tr>
     <tr>
-      <td class="main-layer"><span class="layer-name">Persistence / integration layer</span><span class="layer-note">Typed state APIs and typed service APIs.</span></td>
+      <td class="main-layer"><span class="layer-name">Data access layer</span><span class="layer-note">Typed APIs for reading and writing Typhoon state.</span></td>
     </tr>
     <tr>
-      <td class="main-layer"><span class="layer-name">External systems layer</span><span class="layer-note">Durable stores, artifact stores, and external service endpoints.</span></td>
+      <td class="main-layer"><span class="layer-name">Data store layer</span><span class="layer-note">Database and artifact storage that hold Typhoon state.</span></td>
     </tr>
   </tbody>
 </table>
 
 <p><strong>Presentation / interaction layer.</strong> Converts the outside world's events into internal requests and renders responses back out. It validates that a request is well-formed and extracts identity claims. It does not own use-case decisions or durable work.</p>
 
-<p><strong>Application / core layer.</strong> Owns Typhoon's use cases and orchestration. It coordinates the use plane and management plane, sequences work, validates workflow preconditions, and invokes typed persistence/integration APIs. It does not write stores or call external services directly.</p>
+<p><strong>Application / core layer.</strong> Owns Typhoon's use cases and orchestration. It coordinates the use plane and management plane, sequences work, validates workflow preconditions, and invokes typed data-access APIs. It does not write stores directly.</p>
 
-<p><strong>Persistence / integration layer.</strong> Exposes typed state APIs and typed service APIs to the floors above. For persistence, it owns schema shape, query boundaries, transaction composition, coordination primitives, and store-specific error translation. For external services, it owns client mechanics, request/response mapping, retries, and protocol-specific error translation. It does not decide user intent or own use-case orchestration; it persists facts and reaches external capabilities according to decisions made above it.</p>
+<p><strong>Data access layer.</strong> Exposes typed state APIs to the floors above. It owns schema shape, query boundaries, transaction composition, coordination primitives, and store-specific error translation. It does not decide user intent or own use-case orchestration; it persists and retrieves facts according to decisions made above it.</p>
 
-<p><strong>External systems layer.</strong> The deepest layer contains durable data stores, durable artifact stores, and non-durable service endpoints. Durable stores provide persistence guarantees and are the source of truth for persisted Typhoon state. Service endpoints provide capabilities, but they do not store Typhoon state and they do not know Typhoon behavior.</p>
+<p><strong>Data store layer.</strong> The deepest layer contains the database and artifact storage that hold Typhoon state. This is the normal database/storage floor of the architecture, not an "external systems" bucket.</p>
 
 <p><strong>Foundation sidecar.</strong> Provides narrow primitives used everywhere, such as identity values, time, errors, and observability. It is a side concern rather than a business floor and must stay small; it should never become a general-purpose "shared" bucket.</p>
 
-<p>Four boundaries are load-bearing. First, <strong>interaction stays thin</strong> — translate and render, do not decide. Second, <strong>application owns workflow decisions</strong> — use-case decisions live with the use cases that apply them, not at the edge. Third, <strong>persistence/integration is the only path to external systems</strong> — upper layers never write stores or call services directly. Fourth, <strong>external systems store facts or provide capabilities, not Typhoon behavior</strong>. Foundation's rule is separate: stay narrow. The concrete static dependency view that enforces these rules in code is a DLD responsibility, not an HLD diagram.</p>
+<p>Four boundaries are load-bearing. First, <strong>interaction stays thin</strong> — translate and render, do not decide. Second, <strong>application owns workflow decisions</strong> — use-case decisions live with the use cases that apply them, not at the edge. Third, <strong>data access is the only path to stores</strong> — upper layers never write the database or artifact storage directly. Fourth, <strong>stores hold facts, not Typhoon behavior</strong>. Foundation's rule is separate: stay narrow. Service integrations such as channel APIs and LLM APIs are adapter concerns described outside this stack. The concrete static dependency view that enforces these rules in code is a DLD responsibility, not an HLD diagram.</p>
 
 <h3 id="sec-2-2">2.2 Logical view (modules)</h3>
 
-<p>The logical view enumerates the modules — function groups — that make up Typhoon. Each module has one job, named clearly, with explicit consumers and producers. The catalog maps modules to their primary layer from §2.1, but the layer labels are descriptive, not crate names. External systems are not listed as modules because they are outside Typhoon's code; persistence/integration modules are the Typhoon-side typed APIs and adapters that reach them. Modules marked <em>Interaction + application</em> currently straddle two floors because their boundary surface and use-case logic are described together at HLD level; the DLD decides whether those concerns split into separate implementation units. The function-to-module matrix and the box-and-arrow diagram below let a reader trace any capability to the modules that implement it.</p>
+<p>The logical view enumerates the modules — function groups — that make up Typhoon. Each module has one job, named clearly, with explicit consumers and producers. The catalog maps modules to their primary layer from §2.1, but the layer labels are descriptive, not crate names. Data stores are not listed as modules because they are storage infrastructure; data-access modules are the Typhoon-side typed APIs that read and write them. Service adapters are also shown here when a module needs an outside capability such as a channel API or LLM API. Modules marked <em>Interaction + application</em> currently straddle two floors because their boundary surface and use-case logic are described together at HLD level; the DLD decides whether those concerns split into separate implementation units. The function-to-module matrix and the box-and-arrow diagram below let a reader trace any capability to the modules that implement it.</p>
 
 <h4>Module catalog</h4>
 
@@ -255,12 +255,12 @@ flowchart TB
     <tr><td><b>Tool manager</b></td><td>Interaction + application</td><td>Full proposal and installed-tool lifecycle through the unified <code>typhoon tool</code> namespace: ingest proposal briefs and forge deliveries (submit requires hardened requirements, source, optional tests, and path lint) and operate installed tools (list/show/diff/disable/enable/rollback/delete/purge/promote/sync). Proposal submit does not touch the registry; approval is the first registry mutation. Every mutating subcommand checks operator role; users may invoke read-only listing of tools.</td><td>Proposal queue, Tool registry, Identity bindings (role check), path-lint adapter</td></tr>
     <tr><td><b>Soul manager</b></td><td>Interaction + application</td><td>Per-user flow for soul proposals: list / show / approve / reject. A user may approve their own proposals; the operator may approve any. Approval atomically updates the user's config row and marks the proposal approved.</td><td>Proposal queue, Config, Identity bindings (role check)</td></tr>
     <tr><td><b>Health inspector</b></td><td>Interaction + application</td><td>Read-only <code>typhoon health</code> implementation. Reports gateway and cron daemon liveness, optional heartbeat timestamps, DB latency, and recent recorder/dream status. One-shot CLI commands do not have health.</td><td>Config, Signal store, Dream run log, TursoDB adapter</td></tr>
-    <tr><td><b>Tool registry</b></td><td>Persistence / integration</td><td>Data-access library for tool metadata rows and binary references. Provides transactional reads/writes, checksum persistence, filesystem reconciliation, lineage/history queries, active-tools-only filtering, and archival mechanics.</td><td>TursoDB adapter, Filesystem adapter</td></tr>
-    <tr><td><b>Memory store</b></td><td>Persistence / integration</td><td>Data-access library for memories. Stores and retrieves rows scoped by <code>canonical_user_id</code>; exposes bounded retrieval primitives used by core and extraction/write primitives used by dream.</td><td>TursoDB adapter</td></tr>
-    <tr><td><b>Signal store</b></td><td>Persistence / integration</td><td>Data-access library for signals. Stores signal rows, user tags, success fields, and run metadata; exposes recorder writes, dream reads, user-scoped reads, and stale-prune primitives.</td><td>TursoDB adapter</td></tr>
-    <tr><td><b>Proposal queue</b></td><td>Persistence / integration</td><td>Data-access library for <code>cli_proposals</code> and <code>soul_proposals</code>. Persists statuses, rejection counters, forge delivery fields, and atomic proposal-row updates.</td><td>TursoDB adapter</td></tr>
-    <tr><td><b>Config</b></td><td>Persistence / integration</td><td>Data-access library for typed config values. Persists system-scoped and per-user rows and exposes get/set/list/validate primitives with database-level defense-in-depth checks.</td><td>TursoDB adapter</td></tr>
-    <tr><td><b>Identity bindings</b></td><td>Persistence / integration</td><td>Data-access library for channel bindings and canonical-user rows. Persists binding tuples, verification state, and role records.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Tool registry</b></td><td>Data access</td><td>Data-access library for tool metadata rows and binary references. Provides transactional reads/writes, checksum persistence, filesystem reconciliation, lineage/history queries, active-tools-only filtering, and archival mechanics.</td><td>TursoDB adapter, Filesystem adapter</td></tr>
+    <tr><td><b>Memory store</b></td><td>Data access</td><td>Data-access library for memories. Stores and retrieves rows scoped by <code>canonical_user_id</code>; exposes bounded retrieval primitives used by core and extraction/write primitives used by dream.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Signal store</b></td><td>Data access</td><td>Data-access library for signals. Stores signal rows, user tags, success fields, and run metadata; exposes recorder writes, dream reads, user-scoped reads, and stale-prune primitives.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Proposal queue</b></td><td>Data access</td><td>Data-access library for <code>cli_proposals</code> and <code>soul_proposals</code>. Persists statuses, rejection counters, forge delivery fields, and atomic proposal-row updates.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Config</b></td><td>Data access</td><td>Data-access library for typed config values. Persists system-scoped and per-user rows and exposes get/set/list/validate primitives with database-level defense-in-depth checks.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Identity bindings</b></td><td>Data access</td><td>Data-access library for channel bindings and canonical-user rows. Persists binding tuples, verification state, and role records.</td><td>TursoDB adapter</td></tr>
   </tbody>
 </table>
 
@@ -289,7 +289,7 @@ flowchart TB
 
 <h4>Module relationships</h4>
 
-<p>The diagram below shows the modules and the load-bearing dependencies between them. Edges are not exhaustive — only the dependencies that matter for understanding Typhoon's structure are drawn. Persistence/integration modules also use the external-systems layer; those edges are omitted to keep the picture readable.</p>
+<p>The diagram below shows the modules and the load-bearing dependencies between them. Edges are not exhaustive — only the dependencies that matter for understanding Typhoon's structure are drawn. Data-access modules also use the data-store layer; those edges are omitted to keep the picture readable.</p>
 
 <div class="mermaid">
 flowchart TB
@@ -307,7 +307,7 @@ flowchart TB
       HEALTH[Health inspector]
     end
 
-    subgraph DataModules["Persistence / integration modules"]
+    subgraph DataModules["Data access modules"]
       direction LR
       REG[Tool registry<br/>shared]
       MEM[Memory store<br/>per user]
@@ -449,7 +449,7 @@ flowchart TB
 
 <h3 id="sec-2-4">2.4 Subsystem view</h3>
 
-<p>The subsystem view groups the modules from §2.2 into five coherent subsystems. The grouping is driven by cohesion of responsibility, not by physical crate layers: a subsystem may include interaction, application, persistence/integration, and external-system responsibilities that belong together. The five subsystems become the DLD's chapter partitioning — each one gets its own chapter, sized to be designed and reviewed independently. Cross-subsystem coupling is explicit and goes through the data-access and integration subsystem in almost every case, which keeps the rest of the partitioning tractable.</p>
+<p>The subsystem view groups the modules from §2.2 into five coherent subsystems. The grouping is driven by cohesion of responsibility, not by physical crate layers: a subsystem may include interaction, application, data-access, storage-adapter, and service-adapter responsibilities that belong together. The five subsystems become the DLD's chapter partitioning — each one gets its own chapter, sized to be designed and reviewed independently. Cross-subsystem coupling is explicit and goes through the data-access and adapters subsystem in almost every case, which keeps the rest of the partitioning tractable.</p>
 
 <h4>Subsystem catalog</h4>
 
@@ -462,7 +462,7 @@ flowchart TB
     <tr><td><b>S2 — Channels &amp; dispatch</b> (use plane)</td><td>Telegram gateway, External-agent endpoints, Scheduler, Core, Signal recorder</td><td>Receive every "use" invocation through an adapter, dispatch the work, record one signal per invocation.</td></tr>
     <tr><td><b>S3 — Self-growth</b></td><td>Dream cycle</td><td>Mine accumulated signals into memories and proposals on a scheduled batch.</td></tr>
     <tr><td><b>S4 — Registry management</b></td><td>Tool manager (with path lint), Soul manager</td><td>Move proposals through ratification into atomic registry / config mutations.</td></tr>
-    <tr><td><b>S5 — Data access &amp; integration</b></td><td>Tool registry, Memory store, Signal store, Proposal queue, Config, Identity bindings<br/>storage adapters, LLM clients, channel clients, path lint</td><td>Own Typhoon's persistence mechanics and typed integration with external systems.</td></tr>
+    <tr><td><b>S5 — Data access &amp; adapters</b></td><td>Tool registry, Memory store, Signal store, Proposal queue, Config, Identity bindings<br/>storage adapters, service adapters, path lint</td><td>Own Typhoon's data-access mechanics and typed adapters for storage drivers and non-storage services.</td></tr>
   </tbody>
 </table>
 
@@ -478,12 +478,12 @@ flowchart TB
 <h4>S4 — Registry management</h4>
 <p>S4 owns the operator-driven advancement of proposals into the registry. Tool manager covers the unified <code>typhoon tool</code> namespace (proposal flow with required forge delivery fields and path lint, plus full lifecycle operations on installed tools); every mutation gates on the operator role. Proposal submit attaches forge output to <code>cli_proposals</code>; approval is the first operation that mutates the installed-tool registry. Soul manager is the per-user flow for soul proposals — a user may approve their own, the operator may approve any — with atomic per-user config mutation on approval. Both managers query S5's Identity bindings for the role check, then compose against the proposal queue and the corresponding storage library (tool registry for one, config for the other), and both rely on the registry mutation protocol from §2.3 wherever a filesystem write is involved. The DLD chapter for S4 covers the proposal state-machine transitions, path-lint implementation, the role-check policy at every subcommand, the operator-CLI command grammar and exit codes, the atomic-mutation transaction shapes, the lineage-and-history rules, the 3-strike rejection tracking (per pattern for cli proposals; per <code>(canonical_user_id, config_key)</code> for soul), and the promote-script (hand-written tool adoption) flow.</p>
 
-<h4>S5 — Data access &amp; integration</h4>
-<p>S5 is everything that knows how Typhoon talks to external systems. Data-access libraries (tool registry, memory store, signal store, proposal queue, config, identity bindings) own persistence mechanics and typed state APIs — atomicity, retrieval bounds, success fields, type validation, lineage persistence, verified-binding rows, the shared-vs-per-user data scoping, and role lookup. Integration adapters own the protocols for talking to durable stores, durable artifact locations, and non-durable service endpoints. The persistence/integration boundary inside this subsystem is the most important thing about it: Typhoon code uses typed APIs, while external systems store records/artifacts or provide capabilities. The DLD chapter for S5 covers the SQL schema (DDL — including the canonical-user table, binding table, and per-user vs system config split), each library's API surface (which APIs take <code>canonical_user_id</code> and which do not), the registry mutation protocol, transaction primitives, lock primitives, every adapter's external interface, and the exact static dependency view that enforces the boundary in code.</p>
+<h4>S5 — Data access &amp; adapters</h4>
+<p>S5 is the lower implementation subsystem that contains Typhoon's data-access libraries and typed adapters. Data-access libraries (tool registry, memory store, signal store, proposal queue, config, identity bindings) own persistence mechanics and typed state APIs — atomicity, retrieval bounds, success fields, type validation, lineage persistence, verified-binding rows, the shared-vs-per-user data scoping, and role lookup. Storage adapters own driver mechanics for the data-store layer. Service adapters own the protocols for non-storage services such as channel APIs and LLM APIs. The important boundary is that application code uses typed APIs and adapters; it does not embed SQL, filesystem driver details, channel wire formats, or LLM provider request formats. The DLD chapter for S5 covers the SQL schema (DDL — including the canonical-user table, binding table, and per-user vs system config split), each library's API surface (which APIs take <code>canonical_user_id</code> and which do not), the registry mutation protocol, transaction primitives, lock primitives, every adapter's external interface, and the exact static dependency view that enforces the boundary in code.</p>
 
 <h4>Subsystem dependencies</h4>
 
-<p>Almost every cross-subsystem dependency goes through S5. S2 and S4 produce mutations; S3 produces and consumes; S1 reads health. S5 is the integration point — that is the point of having a data-access and integration subsystem.</p>
+<p>Almost every cross-subsystem dependency goes through S5. S2 and S4 produce mutations; S3 produces and consumes; S1 reads health. S5 is the lower access point — that is the point of having a data-access and adapters subsystem.</p>
 
 <div class="mermaid">
 flowchart TB
@@ -491,7 +491,7 @@ flowchart TB
     S2[S2 — Channels &amp; Dispatch<br/>Gateway, Endpoints, Scheduler,<br/>Core, Recorder]
     S3[S3 — Self-growth<br/>Dream cycle]
     S4[S4 — Registry management<br/>Tool manager, Soul manager]
-    S5[S5 — Data access &amp; integration<br/>typed APIs + external-system adapters]
+    S5[S5 — Data access &amp; adapters<br/>typed APIs + service adapters]
 
     S1 --> S5
     S2 --> S5
@@ -513,7 +513,7 @@ flowchart TB
 
 <h3 id="sec-2-5">2.5 Project layout (workspace, crates, cross-cutting concerns)</h3>
 
-<p>The HLD only fixes the intended ownership boundaries. The DLD should turn those boundaries into a concrete Rust workspace and a static dependency view. That later view must show exact crate edges, manifest rules, and the compile-time checks that prevent application code from bypassing persistence/integration APIs or external-system adapters from owning Typhoon lifecycle semantics.</p>
+<p>The HLD only fixes the intended ownership boundaries. The DLD should turn those boundaries into a concrete Rust workspace and a static dependency view. That later view must show exact crate edges, manifest rules, and the compile-time checks that prevent application code from bypassing data-access APIs or service adapters from owning Typhoon lifecycle semantics.</p>
 
 <h4>Candidate workspace partition</h4>
 
@@ -532,10 +532,10 @@ flowchart TB
     │                                 #      Scheduler, Core, Recorder
     ├── typhoon-dream/                # S3 — Dream batch (light / REM / deep)
     ├── typhoon-registry-mgmt/        # S4 — Tool manager + Soul manager
-    ├── typhoon-data/                 # S5 persistence — Tool registry, Memory store,
+    ├── typhoon-data/                 # S5 data access — Tool registry, Memory store,
     │                                 #         Signal store, Proposal queue, Config,
     │                                 #         Identity bindings
-    ├── typhoon-adapters/             # S5 integration — storage, services,
+    ├── typhoon-adapters/             # S5 adapters — storage drivers, service clients,
     │                                 #         LLM clients, Telegram, path lint
     ├── typhoon-foundation/           # foundation sidecar — error types, clock, ID gen,
     │                                 #      logging facade,
@@ -550,7 +550,7 @@ flowchart TB
 
 <p>The static dependency view is deliberately deferred to detailed design. The DLD should define the exact crate dependency DAG and prove these guarantees mechanically:</p>
 <ol>
-  <li><strong>Responsibility boundary = compile-time where practical.</strong> Application crates should not bypass persistence/integration APIs to call external systems directly unless the DLD explicitly accepts and documents an exception.</li>
+  <li><strong>Responsibility boundary = compile-time where practical.</strong> Application crates should not bypass data-access APIs to write stores directly, and should not embed service wire-format details unless the DLD explicitly accepts and documents an exception.</li>
   <li><strong>Subsystem boundary = compile-time where practical.</strong> Registry management should not accidentally call into dispatch, and dream should not depend on registry-management workflow code.</li>
   <li><strong>No circular dependencies possible.</strong> Cargo refuses to compile cycles, so the dependency DAG is mechanically guaranteed.</li>
   <li><strong>Subsystem-scoped testing.</strong> <code>cargo test -p typhoon-dream</code> runs only S3 and its real deps. No false coupling to dispatch.</li>
@@ -579,7 +579,7 @@ flowchart TB
   </tbody>
 </table>
 
-<p>Three rules govern when something becomes cross-cutting versus subsystem-local. <strong>(a)</strong> If two or more subsystem crates need it identically, it goes to <code>typhoon-foundation</code>. <strong>(b)</strong> If only one subsystem needs it, it stays inside that subsystem's crate. <strong>(c)</strong> If it touches an external system, it lives in <code>typhoon-adapters</code> regardless of how many subsystems consume it. The S5 data-access and integration subsystem bridges Typhoon semantics with adapters; foundation never touches adapters.</p>
+<p>Three rules govern when something becomes cross-cutting versus subsystem-local. <strong>(a)</strong> If two or more subsystem crates need it identically, it goes to <code>typhoon-foundation</code>. <strong>(b)</strong> If only one subsystem needs it, it stays inside that subsystem's crate. <strong>(c)</strong> If it is a storage driver or service client, it lives in <code>typhoon-adapters</code> regardless of how many subsystems consume it. The S5 data-access and adapters subsystem bridges Typhoon semantics with stores and service clients; foundation never touches adapters.</p>
 
 <h4>Cross-cutting that this layout deliberately rejects</h4>
 
