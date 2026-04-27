@@ -437,44 +437,110 @@ flowchart TB
 
 <p>One subtlety: when cron fires a management-plane subcommand (for example, the seeded <code>typhoon dream</code> entry), it spawns that subcommand directly rather than routing through core. No signal is recorded for the act of firing. Scheduled management activity is observed through its own operational tables such as <code>dream_runs</code> and through daemon health, not through the signal store.</p>
 
-<h4>Process map</h4>
+<h4>Process interfaces and messages</h4>
+
+<p>This process view is scoped to message exchange and control flow between actors, Typhoon processes, integration APIs, and stores. It does not repeat the static dependency view from §2.1/§2.2; it answers which participants exchange which messages, who owns each activity, and which runtime rules influence the flow.</p>
+
+<table>
+  <thead><tr><th>Interface</th><th>Involved systems</th><th>Messages / activities</th><th>Rules</th></tr></thead>
+  <tbody>
+    <tr><td>Channel turn</td><td>Channel service ↔ channel adapter ↔ Telegram gateway ↔ core</td><td>Fetch update, resolve peer, dispatch invocation, render reply</td><td>Gateway resolves <code>canonical_user_id</code> before core; service adapter owns protocol mechanics</td></tr>
+    <tr><td>External-agent endpoint</td><td>External agent CLI ↔ endpoint process ↔ core</td><td>Record signal, query memory, return structured CLI output</td><td>v0.1 defaults identity to operator unless a binding mechanism is added</td></tr>
+    <tr><td>Scheduled execution</td><td>Scheduler ↔ core / dream / tool subprocess</td><td>Fire use-plane target through core; fire management target directly; execute scheduled tool</td><td>Only use-plane targets produce signals; management targets are observed through their own tables</td></tr>
+    <tr><td>LLM call</td><td>Core or dream ↔ LLM service adapter ↔ LLM service</td><td>Prompt request, tool-loop context, structured response</td><td>Application code never embeds provider wire formats; adapter is protocol-only</td></tr>
+    <tr><td>State access</td><td>Application process ↔ data-access API ↔ data store</td><td>Memory query, registry lookup, proposal mutation, config mutation, identity lookup</td><td>All store access uses typed data-access APIs; multi-row writes use transactions</td></tr>
+    <tr><td>Signal recording</td><td>Core ↔ signal recorder ↔ signal store</td><td>Persist invocation outcome and success tags</td><td>Core is the only process that drives the recorder</td></tr>
+    <tr><td>Registry mutation</td><td>Tool manager ↔ data-access API ↔ TursoDB and filesystem</td><td>Approve, promote, rollback, enable, disable, delete, purge, sync</td><td>Operator-gated; DB is source of truth; filesystem mutation follows the registry protocol</td></tr>
+    <tr><td>Dream batch</td><td>Dream process ↔ data-access API / LLM adapter</td><td>Read signals and memories; produce memories and proposals; prune stale signals</td><td><code>dream.lock</code> enforces single batch; dream proposes but does not ratify</td></tr>
+    <tr><td>Health inspection</td><td>Health inspector ↔ data-access API ↔ daemon state rows</td><td>Read gateway/cron liveness, heartbeat freshness, DB latency, recent recorder/dream status</td><td>Only gateway and scheduler have daemon health state</td></tr>
+  </tbody>
+</table>
+
+<h4>Process map — message and control flow</h4>
+
+<p>The map is a process-view diagram: boxes are responsible participants, arrows are exchanged messages or control transfers, and bracketed labels are runtime rules. It is intentionally not a deployment diagram.</p>
 
 <div class="mermaid">
-flowchart TB
-    subgraph Daemons["Long-running daemons"]
-      direction LR
-      D1[Telegram gateway<br/>typhoon gateway --telegram]
-      D2[Scheduler<br/>typhoon cron]
+flowchart LR
+    subgraph External["Actors and services outside Typhoon"]
+      direction TB
+      CH[Channel service<br/>Telegram today]
+      AG[External agent CLI]
+      OP[Operator]
+      LLM[LLM service]
     end
 
-    subgraph Locked["File-locked transient"]
-      DREAM[Dream batch<br/>typhoon dream<br/><i>holds dream.lock</i>]
+    subgraph Processes["Typhoon processes"]
+      direction TB
+      GW[Telegram gateway<br/>daemon]
+      EP[External-agent endpoint<br/>one-shot]
+      CRON[Scheduler<br/>daemon]
+      CORE[Core dispatcher]
+      REC[Signal recorder]
+      DREAM[Dream batch<br/>locked one-shot]
+      MGR[Tool / soul manager<br/>operator one-shot]
+      HEALTH[Health inspector<br/>read-only one-shot]
+      TOOLPROC[Forged tool subprocess]
     end
 
-    subgraph OneShots["One-shot processes"]
-      direction LR
-      OPS[Tool manager<br/>Soul manager<br/>Bootstrap<br/>Inspection<br/>Health]
-      AGT[External-agent endpoints<br/>signal record / memory query]
-      EXT[Forged tool subprocess<br/>spawned by core or cron]
+    subgraph Integration["Integration APIs"]
+      direction TB
+      CHAD[Channel service adapter]
+      LLMAD[LLM service adapter]
+      DATA[Data-access APIs]
     end
 
-    subgraph Shared["Shared state — sole coordination medium"]
-      direction LR
-      DB[(TursoDB<br/><b>BEGIN IMMEDIATE</b><br/>for DB writes)]
-      FS["Filesystem<br/>~/.typhoon/bin, .history/<br/>dream.lock"]
+    subgraph Stores["Typhoon data stores"]
+      direction TB
+      DB[(TursoDB)]
+      FS[Filesystem<br/>bin, history, locks]
     end
 
-    Daemons --> Shared
-    Locked --> Shared
-    OneShots --> Shared
+    CH -- update / reply --> CHAD
+    CHAD -- update --> GW
+    GW -- reply --> CHAD
+    GW -- invocation<br/>[identity resolved] --> CORE
 
-    D2 -.spawns.-> DREAM
-    D2 -.spawns.-> OPS
-    D2 -.spawns via core.-> EXT
-    D1 -.spawns via core.-> EXT
-    OPS -.reads liveness/heartbeats.-> D1
-    OPS -.reads liveness/heartbeats.-> D2
+    AG -- signal record / memory query --> EP
+    EP -- invocation<br/>[operator default] --> CORE
+
+    CRON -- use target --> CORE
+    CRON -- management target --> DREAM
+    CRON -- scheduled tool --> TOOLPROC
+    OP -- proposal / lifecycle command --> MGR
+    OP -- health command --> HEALTH
+
+    CORE -- memory query / registry lookup --> DATA
+    CORE -- prompt request --> LLMAD
+    LLMAD -- provider request / response --> LLM
+    CORE -- record signal<br/>[core only] --> REC
+    REC -- signal row --> DATA
+    CORE -- execute tool --> TOOLPROC
+    TOOLPROC -- status / stdout --> CORE
+
+    DREAM -- signals, memories, proposals<br/>[dream.lock] --> DATA
+    DREAM -- batch prompt --> LLMAD
+    MGR -- proposal / registry / config mutation<br/>[operator gate] --> DATA
+    MGR -- executable mutation<br/>[registry protocol] --> FS
+    HEALTH -. daemon state / latency .-> DATA
+
+    DATA -- SQL transaction / query --> DB
+    DATA -- file read / write / lock --> FS
 </div>
+
+<h4>Process-view verification checklist</h4>
+
+<table>
+  <thead><tr><th>Check</th><th>Typhoon answer</th></tr></thead>
+  <tbody>
+    <tr><td>Determine interfaces</td><td>The view lists channel, external-agent, scheduler, LLM, state-access, recorder, registry-mutation, dream, and health interfaces.</td></tr>
+    <tr><td>Identify involved systems</td><td>The map partitions external actors/services, Typhoon processes, integration APIs, and Typhoon data stores.</td></tr>
+    <tr><td>Identify activities and control flow</td><td>Use-plane work flows through core; management-plane work goes directly to the responsible process; dream and registry mutation show their exclusive-control rules.</td></tr>
+    <tr><td>Define messages</td><td>Every process arrow carries the message being exchanged: update, reply, invocation, prompt, response, signal row, proposal mutation, registry mutation, health read, or file operation.</td></tr>
+    <tr><td>Define rules</td><td>The diagram names the runtime rules that influence actions: identity resolution, operator gate, core-only recording, <code>dream.lock</code>, transactions, and the registry protocol.</td></tr>
+    <tr><td>Verify the view</td><td>No actor writes stores directly; application code reaches stores through data-access APIs; external services are reached through service adapters; only gateway and scheduler have daemon health state.</td></tr>
+  </tbody>
+</table>
 
 <h4>Process supervision</h4>
 
