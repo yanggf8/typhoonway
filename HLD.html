@@ -69,7 +69,7 @@
 
 <p>At runtime, multiple processes of that binary coexist, divided into two planes by whether they go through core.</p>
 
-<p>The <strong>use plane</strong> covers every process whose work counts as Typhoon being <em>used</em>. Three sources feed into core. The <em>Telegram gateway</em> (<code>typhoon gateway --telegram</code>) is a long-poll daemon that hosts a chat-driven agent loop and forwards normalized requests to core; this is the canonical "gateway" — a long-running channel adapter. Future channels (Slack, Discord, web hooks) would add new gateway processes alongside it without changing core. The <em>external-agent channel</em> needs no gateway: each agent action is a one-shot subcommand invocation (<code>typhoon signal record</code> to report a tool call and outcome, <code>typhoon memory query</code> to pull retrieval context) that enters core directly through Typhoon's normal CLI dispatch. The <em>scheduler</em> (<code>typhoon cron</code>) is a general scheduler daemon. For use-plane targets, it fires entries through core — each entry is a cron expression plus a target, where the target is a user-facing <code>typhoon</code> subcommand or any tool on PATH. Core, invoked from any of these three sources, dispatches the actual work — calling the frontier LLM (Telegram-gateway path), spawning a tool subprocess, reading the memory store — and tells the signal recorder to persist a signal row for each invocation. The recorder is the only thing that touches the signal store. This is why scheduled use triggers flow through core: a scheduled <code>deploy-status</code> run is recorded exactly the way a Telegram-driven one would be, and dream can therefore learn from scheduled use.</p>
+<p>The <strong>use plane</strong> covers every process whose work counts as Typhoon being <em>used</em>. Three sources feed into core. The <em>Telegram gateway</em> (<code>typhoon gateway --telegram</code>) is a long-poll daemon that hosts a chat-driven agent loop and forwards normalized requests to core; this is the canonical gateway — a long-running channel-facing workflow process, not the channel protocol client itself. Future channels (Slack, Discord, web hooks) would add new gateway processes alongside it without changing core. The <em>external-agent channel</em> needs no gateway: each agent action is a one-shot subcommand invocation (<code>typhoon signal record</code> to report a tool call and outcome, <code>typhoon memory query</code> to pull retrieval context) that enters core directly through Typhoon's normal CLI dispatch. The <em>scheduler</em> (<code>typhoon cron</code>) is a general scheduler daemon. For use-plane targets, it fires entries through core — each entry is a cron expression plus a target, where the target is a user-facing <code>typhoon</code> subcommand or any tool on PATH. Core, invoked from any of these three sources, dispatches the actual work — calling the frontier LLM (Telegram-gateway path), spawning a tool subprocess, reading the memory store — and tells the signal recorder to persist a signal row for each invocation. The recorder is the only thing that touches the signal store. This is why scheduled use triggers flow through core: a scheduled <code>deploy-status</code> run is recorded exactly the way a Telegram-driven one would be, and dream can therefore learn from scheduled use.</p>
 
 <p>The <strong>management plane</strong> bypasses core and operates directly on state. The unified tool manager (<code>typhoon tool</code>, covering both proposal-flow ingestion and lifecycle operations on the tool registry) is here. Dream (<code>typhoon dream</code>, a standalone file-locked batch job that drains signals into proposals and memories) is here. Health is daemon-scoped: only long-running gateway and cron processes need liveness state and optional heartbeats. One-shot CLI commands do not have health; they succeed or fail through their exit codes. Smaller operator one-shots (<code>typhoon config</code>, <code>typhoon sql</code>, <code>typhoon dream stats</code>, <code>typhoon health</code>) exist as CLI utilities for direct state inspection but are not architectural components in their own right. None of these generate signals — they are meta-operations on the registry, the config, the signal store itself. The scheduler dispatches differently depending on target. Use-plane targets (a tool on PATH, a user-facing <code>typhoon</code> subcommand) go through core and are recorded as signals exactly like Telegram-driven invocations — that is the whole point of routing scheduled use through core. Management-plane targets (the seeded <code>typhoon dream</code> entry, a periodic <code>typhoon tool sync</code> for janitor sweeps) are spawned by the scheduler directly without going through core, and produce no signals; their own operational tables (<code>dream_runs</code>, etc.) are how scheduled management activity is observed.</p>
 
@@ -77,7 +77,7 @@
 
 <p>Typhoon's own command surface is agent-first. Every subcommand accepts and emits JSON, exits with structured codes, and is safe to compose into pipelines. An interactive operator and an external agent CLI invoke the same commands through the same paths — there is no human-only or agent-only mode. This is the precondition that makes the external-agent channel work without a separate API surface — the agent's one-shot subcommand invocations are the same calls the operator could type by hand.</p>
 
-<p>This document uses these terms consistently. <strong>Typhoon's CLI</strong> is the <code>typhoon</code> binary's own command surface. <strong>Tools</strong> are the forged and operator-promoted artifacts installed into <code>~/.typhoon/bin/</code>; "tool" subsumes both dream-forged CLIs and hand-written scripts the operator has promoted — both live in the same registry under the same rules. The <strong>tool manager</strong> is the <code>typhoon tool</code> subcommand namespace that ingests proposal deliveries and operates on the installed-tool registry; proposal rows are not registry rows until approval. <strong>Typhoon core</strong> is the in-binary module that dispatches every "use" invocation. The <strong>signal recorder</strong> is a separate component that persists signals to the signal store and is driven exclusively by core. A <strong>gateway</strong> is a long-running channel adapter — a daemon that listens on one external channel (Telegram today; future Slack, Discord, web hooks) and feeds normalized requests to core. The external-agent channel does not need a gateway because each agent action is a fresh one-shot <code>typhoon</code> subcommand invocation that enters core directly. <strong>Forge</strong> is the operator-controlled implementation workflow that turns a dream proposal brief into hardened requirements, source, tests, and a correctness argument; in v0.1 it is manual, and in a later stage it may be assisted by a forge CLI.</p>
+<p>This document uses these terms consistently. <strong>Typhoon's CLI</strong> is the <code>typhoon</code> binary's own command surface. <strong>Tools</strong> are the forged and operator-promoted artifacts installed into <code>~/.typhoon/bin/</code>; "tool" subsumes both dream-forged CLIs and hand-written scripts the operator has promoted — both live in the same registry under the same rules. The <strong>tool manager</strong> is the <code>typhoon tool</code> subcommand namespace that ingests proposal deliveries and operates on the installed-tool registry; proposal rows are not registry rows until approval. <strong>Typhoon core</strong> is the in-binary module that dispatches every "use" invocation. The <strong>signal recorder</strong> is a separate component that persists signals to the signal store and is driven exclusively by core. A <strong>gateway</strong> is a long-running channel workflow daemon — a process that listens on one external channel (Telegram today; future Slack, Discord, web hooks), resolves identity, and feeds normalized requests to core. The channel adapter under it is a typed protocol client, not the gateway workflow. The external-agent channel does not need a gateway because each agent action is a fresh one-shot <code>typhoon</code> subcommand invocation that enters core directly. <strong>Forge</strong> is the operator-controlled implementation workflow that turns a dream proposal brief into hardened requirements, source, tests, and a correctness argument; in v0.1 it is manual, and in a later stage it may be assisted by a forge CLI.</p>
 
 <p>Identity terms. A <strong>canonical user</strong> is the stable per-person identity inside Typhoon, referenced by <code>canonical_user_id</code>. Channels are external; canonical users are internal; a <strong>binding</strong> is a verified mapping from a channel-specific identity (e.g., a Telegram peer + bot account) to a canonical user. There are two roles: the <strong>operator</strong> ratifies proposals, manages tools, and runs administrative commands; a <strong>user</strong> sends signals and consumes memory and tools. v0.1 has exactly one operator — the deploying party, seeded at init — and zero or more additional users who join via channel binding.</p>
 
@@ -106,7 +106,7 @@ flowchart TB
       subgraph UsePlane["Use plane — routes through core, records signals"]
         direction TB
 
-        subgraph Gateway["Gateway — long-running channel adapters"]
+        subgraph Gateway["Gateway — long-running channel workflow daemon"]
           direction LR
           TGGW["<b>typhoon gateway --telegram</b><br/>long-poll daemon<br/><i>hosts chat-driven<br/>agent loop</i>"]
         end
@@ -265,7 +265,7 @@ flowchart TB
   </thead>
   <tbody>
     <tr><td><b>Bootstrap</b></td><td>Application</td><td>Initialise a Typhoon instance against an operator-provided TursoDB URL/token: run schema migrations and write seed config. Idempotent.</td><td>Config, Identity bindings, TursoDB adapter</td></tr>
-    <tr><td><b>Telegram gateway</b></td><td>Interaction + application</td><td>Long-poll daemon that hosts the Telegram-channel agent loop: resolve the incoming Telegram peer to a canonical user via Identity bindings (or run onboarding for an unbound peer), normalise the message, drive core scoped to that user, post replies.</td><td>Core, Identity bindings, Channel service adapters</td></tr>
+    <tr><td><b>Telegram gateway</b></td><td>Interaction + application</td><td>Long-running channel workflow daemon. It asks Channel service adapters for updates and reply delivery, then resolves the peer, runs onboarding when needed, converts the channel update into a Typhoon invocation, and drives core scoped to that user. It does not own Telegram wire formats, retry semantics, or provider error mapping.</td><td>Core, Identity bindings, Channel service adapters</td></tr>
     <tr><td><b>External-agent endpoints</b></td><td>Interaction + application</td><td>Adapter logic for external-agent reports and queries: validate the input shape, default the canonical_user_id to the operator (v0.1; explicit <code>--user</code> later), invoke core. The <code>signal record</code> / <code>memory query</code> handlers are thin wrappers that call into this module.</td><td>Core, Identity bindings</td></tr>
     <tr><td><b>Scheduler</b></td><td>Application</td><td>Cron daemon and entry registry: tick on schedule, fire use-plane targets through core, spawn management-plane targets directly, track next-run times.</td><td>Core, Config</td></tr>
     <tr><td><b>Core</b></td><td>Application</td><td>Use-plane dispatcher: receive invocations carrying a <code>canonical_user_id</code> from gateway / scheduler / external-agent endpoints, orchestrate executors (LLM call, tool exec, memory read scoped to the user), drive the recorder for each invocation.</td><td>Signal recorder, Tool registry, Memory store, LLM service adapters</td></tr>
@@ -281,7 +281,7 @@ flowchart TB
     <tr><td><b>Config</b></td><td>Integration / data access</td><td>Data-access library for typed config values. Persists system-scoped and per-user rows and exposes get/set/list/validate primitives with database-level defense-in-depth checks.</td><td>TursoDB adapter</td></tr>
     <tr><td><b>Identity bindings</b></td><td>Integration / data access</td><td>Data-access library for channel bindings and canonical-user rows. Persists binding tuples, verification state, and role records.</td><td>TursoDB adapter</td></tr>
     <tr><td><b>Storage adapters</b></td><td>Integration / data access</td><td>Driver-facing adapters for database and artifact storage. They hide store-specific connection, transaction, filesystem, and error mechanics from data-access libraries.</td><td>Data store layer</td></tr>
-    <tr><td><b>Channel service adapters</b></td><td>Integration / service adapters</td><td>Typed clients and request/response mapping for channel APIs used by gateway processes. They speak channel protocols but do not own gateway workflow.</td><td>External channel services</td></tr>
+    <tr><td><b>Channel service adapters</b></td><td>Integration / service adapters</td><td>Typed client libraries for channel APIs. They expose provider-neutral calls such as <code>fetch_updates</code> and <code>post_message</code>, map provider DTOs/errors/rate limits into Typhoon channel DTOs, and do not own daemon loops, identity resolution, onboarding, or core dispatch.</td><td>External channel services</td></tr>
     <tr><td><b>LLM service adapters</b></td><td>Integration / service adapters</td><td>Typed clients and request/response mapping for frontier and batch LLM calls. They speak provider protocols but do not own prompting strategy or workflow decisions.</td><td>External LLM services</td></tr>
   </tbody>
 </table>
@@ -456,7 +456,7 @@ flowchart TB
 <table>
   <thead><tr><th>Interface</th><th>Involved systems</th><th>Messages / activities</th><th>Rules</th></tr></thead>
   <tbody>
-    <tr><td>Channel turn</td><td>Channel service ↔ channel adapter ↔ Telegram gateway ↔ core</td><td>Fetch update, resolve or onboard peer, dispatch invocation, render reply</td><td>Gateway resolves <code>canonical_user_id</code> before core; service adapter owns protocol mechanics</td></tr>
+    <tr><td>Channel turn</td><td>Telegram API via channel adapter ↔ Telegram gateway ↔ core</td><td><code>fetch_update</code>, resolve or onboard peer, dispatch invocation, <code>post_message</code></td><td>Gateway owns workflow; service adapter owns Telegram protocol mechanics</td></tr>
     <tr><td>External-agent endpoint</td><td>External agent CLI ↔ endpoint process ↔ core</td><td>Record signal, query memory, return structured CLI output</td><td>v0.1 defaults identity to operator unless a binding mechanism is added</td></tr>
     <tr><td>Scheduled execution</td><td>Scheduler ↔ core / management process / tool subprocess</td><td>Fire use-plane target through core, including tool subprocess execution when the target requires it; fire management target directly</td><td>Only use-plane targets produce signals; management targets are observed through their own tables</td></tr>
     <tr><td>LLM call</td><td>Core or dream ↔ LLM service adapter ↔ LLM service</td><td>Prompt request, tool-loop context, structured response</td><td>Application code never embeds provider wire formats; adapter is protocol-only</td></tr>
@@ -476,8 +476,7 @@ flowchart TB
 
 <div class="mermaid">
 sequenceDiagram
-    participant Channel as Channel service
-    participant Adapter as Channel adapter
+    participant Channel as Telegram API via channel adapter
     participant Gateway as Telegram gateway
     participant Identity as Identity bindings
     participant Core as Core dispatcher
@@ -487,8 +486,8 @@ sequenceDiagram
     participant Tool as Forged tool
     participant Recorder as Signal recorder
 
-    Channel->>Adapter: fetch_update(bot_token, offset)
-    Adapter-->>Gateway: channel_update(peer_id, text, attachments)
+    Gateway->>Channel: fetch_update(bot_token, offset)
+    Channel-->>Gateway: channel_update(peer_id, text, attachments)
     Gateway->>Identity: resolve_binding(channel, peer_id)
     alt bound peer
       Identity-->>Gateway: canonical_user_id
@@ -510,14 +509,12 @@ sequenceDiagram
       Core->>Recorder: record_signal(invocation, result, success_tags)
       Recorder->>Data: insert_signal(canonical_user_id, signal)
       Core-->>Gateway: dispatch_result(reply)
-      Gateway->>Adapter: send_reply(peer_id, reply)
-      Adapter->>Channel: post_message(peer_id, reply)
+      Gateway->>Channel: post_message(peer_id, reply)
     else unbound peer
       Identity-->>Gateway: binding_missing
       Gateway->>Identity: create_onboarding_challenge(channel, peer_id)
       Identity-->>Gateway: claim_token
-      Gateway->>Adapter: send_onboarding_prompt(peer_id, claim_token)
-      Adapter->>Channel: post_message(peer_id, onboarding_prompt)
+      Gateway->>Channel: post_message(peer_id, onboarding_prompt)
     end
     Note over Gateway,Recorder: Core is the only caller that drives signal recording.
 </div>
@@ -715,8 +712,9 @@ sequenceDiagram
   </thead>
   <tbody>
     <tr><td>Operator, External agent CLI</td><td>Outside Typhoon</td><td>Human or external caller</td><td>Enter through S1, S2, or S4 command surfaces; never call data-access APIs directly</td></tr>
-    <tr><td>Channel service, LLM service</td><td>Outside Typhoon</td><td>External service endpoint</td><td>Reached only through S5 service adapters</td></tr>
-    <tr><td>Telegram gateway</td><td>S2 — Channels &amp; dispatch</td><td>Channel ingress component group</td><td>Resolves identity, normalises input, invokes core; protocol mechanics stay in S5 adapters</td></tr>
+    <tr><td>Telegram API via channel adapter</td><td>Outside endpoint reached through S5</td><td>Telegram service plus Typhoon's typed channel adapter</td><td>The sequence collapses Telegram service + adapter into one lane because the gateway only sees provider-neutral calls</td></tr>
+    <tr><td>LLM service</td><td>Outside Typhoon</td><td>External service endpoint</td><td>Reached only through S5 service adapters</td></tr>
+    <tr><td>Telegram gateway</td><td>S2 — Channels &amp; dispatch</td><td>Channel ingress component group</td><td>Owns daemon workflow, identity, onboarding, invocation shaping, and core dispatch; protocol mechanics stay in S5 adapters</td></tr>
     <tr><td>External-agent endpoint</td><td>S2 — Channels &amp; dispatch</td><td>CLI ingress component group</td><td>Validates endpoint input, resolves/defaults identity, invokes core</td></tr>
     <tr><td>Scheduler</td><td>S2 — Channels &amp; dispatch</td><td>Schedule dispatch component group</td><td>Use-plane targets go through core; management-plane targets are spawned directly</td></tr>
     <tr><td>Core dispatcher</td><td>S2 — Channels &amp; dispatch</td><td>Use-plane orchestration component group</td><td>Owns use invocation flow and is the only caller that drives the recorder</td></tr>
@@ -727,7 +725,7 @@ sequenceDiagram
     <tr><td>Health inspector</td><td>S1 — Platform</td><td>Observability component group</td><td>Read-only; observes gateway and scheduler daemon state</td></tr>
     <tr><td>Identity bindings, Proposal queue, Tool registry, Memory store, Signal store, Config</td><td>S5 — Data access &amp; adapters</td><td>Data-access component group</td><td>Typed state APIs; enforce scoping, role lookup, transactions, retrieval bounds, and lineage</td></tr>
     <tr><td>Data-access APIs</td><td>S5 — Data access &amp; adapters</td><td>Umbrella participant for data-access libraries</td><td>Only path from application subsystems to Typhoon stores</td></tr>
-    <tr><td>Channel adapter, LLM adapter</td><td>S5 — Data access &amp; adapters</td><td>Service-adapter component group</td><td>Protocol-only clients; no Typhoon lifecycle decisions</td></tr>
+    <tr><td>Channel adapter, LLM adapter</td><td>S5 — Data access &amp; adapters</td><td>Service-adapter component group</td><td>Protocol-only clients; no daemon workflow, identity resolution, onboarding, core dispatch, or Typhoon lifecycle decisions</td></tr>
     <tr><td>Filesystem, filesystem lock</td><td>Not a subsystem; accessed through S5</td><td>Host artifact store and lock target</td><td>S5 provides filesystem and lock mechanics; owning subsystem decides why a lock is taken</td></tr>
   </tbody>
 </table>
