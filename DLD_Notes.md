@@ -64,7 +64,7 @@ DLD.md
     - persona-core's tables vs. Typhoon's tables; coexistence rules
     - tables, indexes, constraints (Typhoon-owned)
     - channel inbox/outbox queue schema, lease/retry/dead-letter semantics, provider-update dedupe keys
-    - `dream_runs` lease schema (host, pid, status, phase_started_at, last_heartbeat_at, cancel_requested_at, expected_finish_at, log_tail), heartbeat tick, stale-takeover predicate, terminal-status set, phase-duration EWMA storage
+    - `dream_runs` lease schema (host, pid, status, phase_started_at, last_heartbeat_at, cancel_requested_at, expected_finish_at, log_tail), heartbeat tick, stale-row close + new-row takeover transaction, run_id ownership checks, terminal-status set, phase-duration EWMA storage
     - migration rules (versioned per owner; additive-only)
     - row ownership / scoping (persona_slug-tagged, user_id-tagged, vs system-scoped)
     - schema-level invariants and CHECK constraints
@@ -127,8 +127,10 @@ These don't need to be settled before drafting starts but should be tracked:
 8. **`tool.md` validation detail.** Exact heading parser, size budget, manifest truncation policy, and whether malformed optional sections warn or block submission.
 9. **Sequence diagram tooling.** Mermaid `sequenceDiagram` works in HTML render; readable as plaintext. Use it or write step-numbered prose? Likely both, depending on flow complexity.
 10. **Dream lease tunables.** `dream.heartbeat_interval_seconds` (default 30), `dream.heartbeat_timeout_seconds` (default 90, three heartbeats), `dream.max_runtime_minutes` (default 120). Confirm or revise after first two weeks of operation.
-11. **Dream phase ETA model.** EWMA over recent successful `dream_runs` phase durations (decay factor TBD), with a static fallback table `dream.expected_phase_duration_seconds.{light,rem,deep,prune}` for the first ~5 runs before EWMA stabilises. DLD nails down the decay factor, the EWMA-vs-fallback switch criterion, and where the EWMA state is stored.
-12. **Dream cancel granularity inside the deep phase.** The deep phase iterates over chunks (each chunk = one LLM call producing one or more memories/proposals). Cancel observed mid-chunk: finish the current LLM call (already paid for) and persist its result, or abandon the in-flight LLM response? Recommend the former; DLD specifies precisely where the cancel poll happens relative to LLM call boundaries.
+11. **Dream takeover transaction detail.** The HLD fixes the shape: in one `BEGIN IMMEDIATE` transaction, a stale live row is marked `timed_out` with `ended_at`, then a new run row is inserted. DLD specifies indexes/constraints that enforce at most one fresh live row and the run-id ownership checks that reject stale process writes.
+12. **Dream phase ETA model.** EWMA over recent successful `dream_runs` phase durations (decay factor TBD), with a static fallback table `dream.expected_phase_duration_seconds.{light,rem,deep,prune}` for the first ~5 runs before EWMA stabilises. DLD nails down the decay factor, the EWMA-vs-fallback switch criterion, and where the EWMA state is stored.
+13. **Dream cancel granularity inside the deep phase.** The deep phase iterates over chunks (each chunk = one LLM call producing one or more memories/proposals). The HLD fixes the control points: poll before launching a chunk and after a chunk returns; do not start a new LLM call after cancel is observed; persist a completed chunk before exiting cancelled. DLD specifies the exact chunk boundary API and the idempotency key for persisted chunk results.
+14. **Deep-phase LLM deadline mechanics.** Each deep-phase LLM request must receive a deadline no later than the remaining `dream.max_runtime_minutes` budget. DLD decides the provider timeout mapping, retry policy on timeout, and how the adapter guarantees a hung provider call cannot keep heartbeating forever.
 
 ## Non-goals for DLD
 

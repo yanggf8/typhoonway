@@ -81,12 +81,12 @@ No skill registry. No system-prompt catalog. No agent-side install.
     Seed memory written: "You built <name>. It does X. Use when Y."
                        │
                        ▼
-    Next session: memory retrieval surfaces the binary, agent invokes it.
+    Next session: core surfaces the tool through the registry-backed tool manifest; memory may add context.
 ```
 
 Dream can run on a cheap batch model because it only writes proposal briefs. The operator handles forge work out-of-band with whichever coding agent gives the best requirement and code quality for that proposal. Online interaction touches the frontier LLM and the relevant memories — never a skill catalog.
 
-Dream is a single-writer batch with a lease row in `dream_runs` (heartbeat-bearing; phase ∈ {light, rem, deep, prune}). The operator can query a running dream's phase, elapsed time, and ETA via `typhoon dream status`, and request a cooperative shutdown via `typhoon dream cancel` — the dream observes the request at the next phase boundary, persists work it has already paid for (e.g., a deep-phase LLM response that has already returned), and exits with status `cancelled`. Total runtime is bounded by `dream.max_runtime_minutes`. A second `typhoon dream` invocation while a live run exists prints status rather than failing with a lock error, so the operator can always tell what's happening.
+Dream is a single-writer batch with a lease row in `dream_runs` (heartbeat-bearing; phase ∈ {light, rem, deep, prune}). The operator can query a running dream's phase, elapsed time, and ETA via `typhoon dream status`, and request a cooperative shutdown via `typhoon dream cancel` — the dream observes the request at each phase boundary and before/after each deep-phase LLM call, persists work it has already paid for when a completed deep chunk returns, and exits with status `cancelled`. Total runtime is bounded by `dream.max_runtime_minutes`; each deep-phase LLM call gets a deadline no later than the remaining dream runtime, and a timeout marks the run `timed_out` instead of letting the heartbeat hide a hung call. A second `typhoon dream` invocation while a live run exists prints status rather than failing with a lock error, so the operator can always tell what's happening.
 
 ### Users and personas
 

@@ -60,7 +60,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W4 | `typhoon sql` — SELECT-only guard | W2 | SELECT works; writes rejected | S |
 | W5 | Use-plane CLI subcommands (`typhoon signal record`, `typhoon memory query`) wired into Core, recorder path, session model, tool-call signal capture | W2 | Hand-run shell script routes through runtime/recorder and produces `dream_signals` rows | M |
 | W6 | Success tagging (exit 0 + no next-turn correction) | W5 | Signals carry `success` flag correctly | S |
-| W7 | Stale-signal prune (7d); dream `dream_runs` lease (acquire / heartbeat / stale-takeover); cooperative cancel handlers per phase; max-runtime enforcement; `typhoon dream status` (with EWMA-or-static ETA) and `typhoon dream cancel [--wait]` | W5 | Re-running dream is safe (lease takeover); admin can query phase / ETA and request graceful shutdown; old signals cleaned | M |
+| W7 | Stale-signal prune (7d); dream `dream_runs` lease (acquire / heartbeat / stale-row close + new-row takeover); cooperative cancel handlers per phase; max-runtime enforcement including deep-phase LLM call deadlines; `typhoon dream status` (with EWMA-or-static ETA) and `typhoon dream cancel [--wait]` | W5 | Re-running dream is safe (lease takeover); admin can query phase / ETA and request graceful shutdown; old signals cleaned | M |
 | W8 | Dream LLM client (cheap batch model), `dream_runs` logging | W5 | Dream can make LLM calls; runs logged | M |
 | W9 | Memory extraction (mem0-style) inside dream | W8 | `memories` table populated from signals | M |
 | W10 | Bounded retrieval (Top-K + similarity + scope) | W9 | `typhoon memory query` next-session shows relevant memories within budget | M |
@@ -186,7 +186,10 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M4-03 | Seed 4 successful chains (below `min_frequency=5`) | No CLI proposal created |
 | TC-M4-04 | Pre-install CLI `foo`; seed signals overlapping `foo`'s origin | Proposal carries `replaces='foo'` |
 | TC-M4-05 | Seed persona-attribute pattern signals (user repeatedly edits a persona's `heuristics`) | `persona_proposals` row appears |
-| TC-M4-06 | Run `typhoon dream` concurrently from two shells | Second invocation exits ≠ 0 with lock error; first completes cleanly |
+| TC-M4-06 | Run `typhoon dream` concurrently from two shells | Second invocation prints current phase / elapsed / ETA / log tail and exits 0 on a TTY; first completes cleanly |
+| TC-M4-07 | Run `typhoon dream` non-interactively while a live run exists | Prints status and exits ≠ 0 so cron treats the overlap as deferred |
+| TC-M4-08 | Mark a live `dream_runs` row stale, then run `typhoon dream` | Old row becomes `timed_out` with `ended_at`; new run row is inserted; stale process writes using the old `run_id` are rejected |
+| TC-M4-09 | Deep-phase LLM adapter hangs past remaining runtime | Request times out; run becomes `timed_out`; heartbeat stops; no partial findings from the failed call are written |
 
 ### 5.5 M5 — First CLI lives
 
