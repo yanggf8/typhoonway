@@ -69,25 +69,25 @@
 
 <p>At runtime, multiple processes of that binary coexist, divided into two planes by whether they go through core.</p>
 
-<p>The <strong>use plane</strong> covers every process whose work counts as Typhoon being <em>used</em>. Three sources feed into core. The <em>channel gateway</em> (<code>typhoon gateway</code>) is one long-running daemon that hosts channel-facing workflows for configured channels and forwards normalized requests to core. v0.1 configures a Telegram adapter; future channels (Slack, Discord, web hooks) add channel-adapter implementations and config entries, not one daemon per channel. The <em>external-agent channel</em> needs no gateway: each agent action is a one-shot subcommand invocation (<code>typhoon signal record</code> to report a tool call and outcome, <code>typhoon memory query</code> to pull retrieval context) that enters core directly through Typhoon's normal CLI dispatch. The <em>scheduler</em> (<code>typhoon cron</code>) is a general scheduler daemon. For use-plane targets, it fires entries through core — each entry is a cron expression plus a target, where the target is a user-facing <code>typhoon</code> subcommand or any tool on PATH. Core, invoked from any of these three sources, dispatches the actual work — calling the frontier LLM for channel-driven turns, spawning a tool subprocess, reading the memory store — and tells the signal recorder to persist a signal row for each invocation. The recorder is the only thing that touches the signal store. This is why scheduled use triggers flow through core: a scheduled <code>deploy-status</code> run is recorded exactly the way a channel-driven one would be, and dream can therefore learn from scheduled use.</p>
+<p>The <strong>use plane</strong> covers every process whose work counts as Typhoon being <em>used</em>. Three sources feed into core. The <em>channel path</em> is one daemon, <code>typhoon gateway</code>, with two internal loops separated by a durable queue: the edge loop talks to external channel services through channel adapters, normalizes inbound updates into a Turso-backed channel inbox, reads the channel outbox, and posts replies; the worker loop is Typhoon Way's agent loop for queued channel turns, resolving identity and forwarding normalized invocations to core. v0.1 ships the Telegram adapter behind the gateway edge loop; future channels add adapter implementations and queue metadata, not direct calls into the agent loop. The <em>external-agent channel</em> needs no gateway loop: each agent action is a one-shot subcommand invocation (<code>typhoon signal record</code> to report a tool call and outcome, <code>typhoon memory query</code> to pull retrieval context) that enters core directly through Typhoon's normal CLI dispatch. The <em>scheduler</em> (<code>typhoon cron</code>) is a general scheduler daemon. For use-plane targets, it fires entries through core — each entry is a cron expression plus a target, where the target is a user-facing <code>typhoon</code> subcommand or any tool on PATH. Core, invoked from the gateway worker loop, the use-plane CLI subcommands (<code>typhoon signal record</code> / <code>typhoon memory query</code>), or the scheduler, coordinates the requested work. In channel turns, core calls the frontier LLM with memory context and the available tool manifest; the LLM chooses any tool calls, and core mediates execution of those LLM-requested calls. In scheduled use targets, core may execute a configured tool/subcommand directly. The recorder is the only thing that touches the signal store, so each invocation outcome is recorded through core. This is why scheduled use triggers flow through core: a scheduled <code>deploy-status</code> run is recorded exactly the way a channel-driven one would be, and dream can therefore learn from scheduled use.</p>
 
 <p>The <strong>management plane</strong> bypasses core and operates directly on state. The unified tool manager (<code>typhoon tool</code>, covering both proposal-flow ingestion and lifecycle operations on the tool registry) is here. Dream (<code>typhoon dream</code>, a standalone file-locked batch job that drains signals into proposals and memories) is here. Health is daemon-scoped: only long-running gateway and cron processes need liveness state and optional heartbeats. One-shot CLI commands do not have health; they succeed or fail through their exit codes. Smaller operator one-shots (<code>typhoon config</code>, <code>typhoon sql</code>, <code>typhoon dream stats</code>, <code>typhoon health</code>) exist as CLI utilities for direct state inspection but are not architectural components in their own right. None of these generate signals — they are meta-operations on the registry, the config, the signal store itself. The scheduler dispatches differently depending on target. Use-plane targets (a tool on PATH, a user-facing <code>typhoon</code> subcommand) go through core and are recorded as signals exactly like channel-driven invocations — that is the whole point of routing scheduled use through core. Management-plane targets (the seeded <code>typhoon dream</code> entry, a periodic <code>typhoon tool sync</code> for janitor sweeps) are spawned by the scheduler directly without going through core, and produce no signals; their own operational tables (<code>dream_runs</code>, etc.) are how scheduled management activity is observed.</p>
 
-<p>All processes share state through TursoDB transactions and filesystem locks regardless of plane. Process roles and concurrency rules are detailed in §2.3.</p>
+<p>All processes share state through TursoDB transactions, queue leases, and filesystem locks regardless of plane. Process roles and concurrency rules are detailed in §2.3.</p>
 
 <p>Typhoon's own command surface is agent-first. Every subcommand accepts and emits JSON, exits with structured codes, and is safe to compose into pipelines. An interactive operator and an external agent CLI invoke the same commands through the same paths — there is no human-only or agent-only mode. This is the precondition that makes the external-agent channel work without a separate API surface — the agent's one-shot subcommand invocations are the same calls the operator could type by hand.</p>
 
-<p>This document uses these terms consistently. <strong>Typhoon's CLI</strong> is the <code>typhoon</code> binary's own command surface. <strong>Tools</strong> are the forged and operator-promoted artifacts installed into <code>~/.typhoon/bin/</code>; "tool" subsumes both dream-forged CLIs and hand-written scripts the operator has promoted — both live in the same registry under the same rules. The <strong>tool manager</strong> is the <code>typhoon tool</code> subcommand namespace that ingests proposal deliveries and operates on the installed-tool registry; proposal rows are not registry rows until approval. <strong>Typhoon core</strong> is the in-binary module that dispatches every "use" invocation. The <strong>signal recorder</strong> is a separate component that persists signals to the signal store and is driven exclusively by core. The <strong>channel gateway</strong> is one long-running workflow daemon that polls configured channels, resolves identity, and feeds normalized requests to core. A <strong>channel adapter</strong> is a switchable provider implementation under that gateway; the Telegram adapter is the v0.1 instance and speaks to the external Telegram service. The external-agent channel does not need a gateway because each agent action is a fresh one-shot <code>typhoon</code> subcommand invocation that enters core directly. <strong>Forge</strong> is the operator-controlled implementation workflow that turns a dream proposal brief into hardened requirements, source, tests, and a correctness argument; in v0.1 it is manual, and in a later stage it may be assisted by a forge CLI.</p>
+<p>This document uses these terms consistently. <strong>Typhoon's CLI</strong> is the <code>typhoon</code> binary's own command surface. <strong>Tools</strong> are the forged and operator-promoted artifacts installed into <code>~/.typhoon/bin/</code>; "tool" subsumes both dream-forged CLIs and hand-written scripts the operator has promoted — both live in the same registry under the same rules. The <strong>tool manager</strong> is the <code>typhoon tool</code> subcommand namespace that ingests proposal deliveries and operates on the installed-tool registry; proposal rows are not registry rows until approval. <strong>Typhoon core</strong> is the in-binary module that dispatches every "use" invocation. The <strong>signal recorder</strong> is a separate component that persists signals to the signal store and is driven exclusively by core. The <strong>channel gateway</strong> is the long-running channel daemon. Its edge loop polls configured channel adapters, writes normalized inbound messages to the channel inbox, reads channel outbox rows, and posts replies. Its worker loop claims queued inbound messages, resolves identity, invokes core, and writes outbound replies. A <strong>channel adapter</strong> is a switchable provider implementation used by the gateway edge loop; the Telegram adapter is the v0.1 instance and speaks to the external Telegram service. The external-agent channel does not need a gateway because each agent action is a fresh one-shot <code>typhoon</code> subcommand invocation that enters core directly. <strong>Forge</strong> is the operator-controlled implementation workflow that turns a dream proposal brief into hardened requirements, source, tests, and a correctness argument; in v0.1 it is manual, and in a later stage it may be assisted by a forge CLI.</p>
 
 <p>Identity terms. Typhoon shares a TursoDB cloud database with <strong>persona-core</strong>, which owns the <code>user</code> / <code>persona</code> schema and the OAuth login flow. A <strong>user</strong> is an auth-bearing human — one row in persona-core's <code>user</code> table, with <code>role</code> ∈ {<code>admin</code>, <code>author</code>}. A <strong>persona</strong> is a writer/agent identity owned by a user — one row in persona-core's <code>persona</code> table, keyed by <code>slug</code>, holding the attribute bundle (<code>expression</code>, <code>mental_models</code>, <code>heuristics</code>, <code>antipatterns</code>, <code>limits</code>) that makes the agent behave as <em>this</em> persona. One user owns many personas. A <strong>binding</strong> is a verified mapping <code>(channel, bot_account_id, peer_id) → user_id</code>; v0.1 also configures one persona per Telegram bot account, so the bot's credentials select the active persona for any turn it carries. The role gate is on the user, not the persona: only an <code>admin</code> user may ratify proposals or mutate the tool registry; an <code>author</code> contributes signals and consumes memory and tools through whichever of their personas is active. v0.1 has exactly one admin — the deploying party, seeded at init — and zero or more authors who join via channel binding. Typhoon does not authenticate users itself; persona-core's OAuth layer authenticates the human and the bot token authenticates the bot.</p>
 
-<p>Three architectural principles run through everything below. First, <strong>tools are the artifact</strong> — the tool registry (TursoDB rows + binaries in <code>~/.typhoon/bin/</code>, reconciled by checksum and filesystem locks) is the system's central artifact store, and every other piece of the lifecycle exists to grow it safely. The registry is fronted by a shared access module — a library, not a process — so both core (for runtime tool lookup during dispatch) and the tool manager CLI (for operator-driven CRUD) read and write through one place; schema knowledge and registry invariants live in this module rather than being re-implemented per consumer. Second, <strong>core dispatches; the recorder records; only core can drive the recorder</strong> — every process that <em>uses</em> Typhoon (the channel gateway, the external-agent endpoints, scheduled use triggers) routes through core, and only core tells the signal recorder to write. The recorder is a separate component, the sole writer to the signal store; gateways and the scheduler adapt or trigger but never invoke the recorder directly. Anything that bypasses core produces no signal. This split — use plane through core, management plane around it — is the structuring rule for the runtime and shows up directly in §2.</p>
+<p>Three architectural principles run through everything below. First, <strong>tools are the artifact</strong> — the tool registry (TursoDB rows + binaries in <code>~/.typhoon/bin/</code>, reconciled by checksum and filesystem locks) is the system's central artifact store, and every other piece of the lifecycle exists to grow it safely. The registry is fronted by a shared access module — a library, not a process — so both core (for runtime tool lookup during dispatch) and the tool manager CLI (for operator-driven CRUD) read and write through one place; schema knowledge and registry invariants live in this module rather than being re-implemented per consumer. Second, <strong>core dispatches; the recorder records; only core can drive the recorder</strong> — every process that <em>uses</em> Typhoon (the gateway worker loop, the use-plane CLI subcommands <code>typhoon signal record</code> / <code>typhoon memory query</code>, scheduled use triggers) routes through core, and only core tells the signal recorder to write. The gateway edge loop never calls core: it only talks to external channel services and the durable channel queue. The recorder is a separate component, the sole writer to the signal store; adapters and the scheduler adapt or trigger but never invoke the recorder directly. Anything that bypasses core produces no signal. This split — use plane through core, management plane around it, external channel ingress through a durable queue — is the structuring rule for the runtime and shows up directly in §2.</p>
 
-<p>Third, <strong>tools are shared; per-persona data is isolated</strong>. A single tool registry serves every persona — when one persona's signals motivate a tool, every persona benefits once an admin approves. Signals, memory, and persona-attribute proposals are scoped per <code>persona_slug</code>; cross-persona reads are a privacy bug. Storage shape is one shared store per concept (one <code>signals</code> table, one <code>memories</code> table, one <code>persona_proposals</code> table), with rows tagged by <code>persona_slug</code>; per-persona isolation is enforced by state APIs that take the slug and filter every read and write — no per-persona queues or partitioned tables. Dream is the deliberate exception: its scan reads across all personas so cross-persona pattern overlap can become evidence for a shared tool. The <code>admin</code> role on the owning user is the gate on tool ratification and registry mutations; <code>author</code>-role processes contribute signals and consume memory and tools, nothing more. The persona row itself lives in persona-core's schema; persona-core writes it through direct user edits (web SPA / CLI), and Typhoon writes it only through approved persona proposals. This per-persona / shared / per-user split lives in S5's data-access libraries (§2.4) and is checked at gateway-resolution and management-command entry; the rest of the architecture is identity-agnostic.</p>
+<p>Third, <strong>tools are shared; per-persona data is isolated</strong>. A single tool registry serves every persona — when one persona's signals motivate a tool, every persona benefits once an admin approves. Signals, memory, and persona-attribute proposals are scoped per <code>persona_slug</code>; cross-persona reads are a privacy bug. Storage shape is one shared store per concept (one <code>signals</code> table, one <code>memories</code> table, one <code>persona_proposals</code> table), with rows tagged by <code>persona_slug</code>; per-persona isolation is enforced by state APIs that take the slug and filter every read and write — no per-persona queues or partitioned tables. Dream is the deliberate exception: its scan reads across all personas so cross-persona pattern overlap can become evidence for a shared tool. The <code>admin</code> role on the owning user is the gate on tool ratification and registry mutations; <code>author</code>-role processes contribute signals and consume memory and tools, nothing more. The persona row itself lives in persona-core's schema; persona-core writes it through direct user edits (web SPA / CLI), and Typhoon writes it only through approved persona proposals. This per-persona / shared / per-user split lives in S5's data-access libraries (§2.4) and is checked at gateway worker-loop resolution and management-command entry; the rest of the architecture is identity-agnostic.</p>
 
 <p>The tool manager is firmly on the management plane: it operates directly on proposals and the registry and never goes through core, because managing tools is meta, not use. Dream is also management plane — it is a standalone batch process that reads accumulated signals and writes proposals and memories. The two are complements: core feeds the signal table by recording use; dream drains it into the proposal queue; the tool manager ratifies approved results into the registry.</p>
 
-<p>The system context is shown below. Typhoon is split into a use plane (everything routing through core, where signals are recorded) and a management plane (everything operating directly on state, no signals generated). Inside the use plane, the gateway group holds long-running channel daemons (Telegram today; future Slack, Discord, web hooks); the external-agent channel bypasses that group because each agent action is a one-shot subcommand into core. Gateways, external-agent endpoints, and scheduler use-target dispatch are the paths into core. The frontier LLM is reached only through core, and only on the Telegram-gateway path. Two paths converge on the tool manager: dream writes proposal briefs into its queue, and forged deliveries return through it via <code>tool propose submit</code>. Solid arrows are flows Typhoon controls; dotted arrows mark the forge step, which the operator drives outside Typhoon's control plane in v0.1 and may automate with a forge CLI later.</p>
+<p>The system context is shown below. Typhoon is split into a use plane (everything routing through core, where signals are recorded), a channel gateway role (one daemon with edge and worker loops around the durable channel queue), and a management plane (everything operating directly on state, no signals generated). The external-agent channel bypasses the queue because each agent action is a one-shot subcommand into core. The gateway worker loop, the use-plane CLI subcommands, and scheduler use-target dispatch are the paths into core. The frontier LLM is reached only through core, and only on the queued gateway-worker path. Two paths converge on the tool manager: dream writes proposal briefs into its queue, and forged deliveries return through it via <code>tool propose submit</code>. Solid arrows are flows Typhoon controls; dotted arrows mark the forge step, which the operator drives outside Typhoon's control plane in v0.1 and may automate with a forge CLI later.</p>
 
 <div class="mermaid">
 flowchart TB
@@ -106,9 +106,10 @@ flowchart TB
       subgraph UsePlane["Use plane — routes through core, records signals"]
         direction TB
 
-        subgraph Gateway["Gateway — long-running channel workflow daemon"]
+        subgraph ChannelPath["typhoon gateway — edge loop + worker loop"]
           direction LR
-          TGGW["<b>typhoon gateway</b><br/>channel daemon<br/><i>Telegram adapter in v0.1</i>"]
+          EDGE["<b>gateway edge loop</b><br/>Telegram-facing<br/><i>adapter + queue only</i>"]
+          WORKER["<b>gateway worker loop</b><br/>Typhoon Way agent loop<br/><i>queue consumer; invokes core</i>"]
         end
 
         CORE{{"<b>Typhoon core</b><br/>dispatcher<br/><i>master path for every use;<br/>sole driver of the recorder</i>"}}
@@ -127,13 +128,14 @@ flowchart TB
 
     subgraph LLMs[" "]
       direction LR
-      OLLM["Frontier LLM<br/><i>Telegram-gateway path only</i>"]
+      OLLM["Frontier LLM<br/><i>queued gateway-worker path only</i>"]
       DLLM[Dream LLM<br/>cheap batch]
     end
 
     subgraph State["Shared state"]
       direction LR
       DB[(TursoDB cloud DB<br/><i>required state store</i>)]
+      CHQ[(Channel queue rows<br/><i>Turso inbox / outbox</i>)]
       FS["Filesystem<br/>~/.typhoon/bin<br/>.history/, dream.lock"]
     end
 
@@ -148,13 +150,16 @@ flowchart TB
     FORGE -.requirements + source + tests + correctness argument.-> OP
     FORGE -.via operator: tool propose submit.-> TOOLMGR
 
-    TG <--> TGGW
-    TGGW --> CORE
+    TG <--> EDGE
+    EDGE <--> CHQ
+    WORKER <--> CHQ
+    CHQ -.tables in.-> DB
+    WORKER --> CORE
     EXT -->|typhoon signal record / memory query| CORE
     CRON -->|use targets| CORE
 
     CORE <-->|prompts + tool-call loop| OLLM
-    CORE -->|exec tools on PATH| FS
+    CORE -->|execute requested tools on PATH| FS
     CORE -->|memory reads| DB
     CORE ==>|tells recorder to record| REC
     REC ==>|writes signals| DB
@@ -167,23 +172,23 @@ flowchart TB
     TOOLMGR <--> DB
     TOOLMGR <--> FS
 
-    HEALTH -.reads liveness.-> TGGW
+    HEALTH -.reads gateway liveness.-> EDGE
     HEALTH -.reads liveness.-> CRON
 </div>
 
 <p>Typhoon's lifecycle has four stages. Stage 1 runs once for an instance. Stages 2 through 4 repeat: online interaction records signals, dream organizes those signals into proposal briefs, and forge plus ratification turns selected briefs into installed CLIs or rejected proposals. After ratification, the system returns to online interaction.</p>
 
 <h3>Stage 1 — Cold start</h3>
-<p>The admin initialises a Typhoon instance against an admin-provided TursoDB cloud database with <code>typhoon init --url URL --token TOK</code>. The database is shared with persona-core, which owns the <code>user</code> / <code>persona</code> schema and is expected to have been migrated to its current schema version before <code>typhoon init</code> runs. Typhoon's own schema migrations apply on top (signal store, memory store, tool registry, proposal queues, daemon state, schema-version row <code>('typhoon', N)</code>); they are idempotent — re-running the bootstrap on an already-initialised database is a no-op. The seed marks the deploying user as <code>admin</code> in persona-core's <code>user</code> table (or refuses to proceed if no such user exists yet) and seeds Typhoon's system-scoped config rows. After bootstrap the runtime is dormant — no daemon runs, no signals exist. One Typhoon runtime instance owns one TursoDB database that serves multiple users with multiple personas. The same cloud database may be reached from other machines for admin review or forge workflows, but running a second Typhoon runtime writer instance against that database is not supported.</p>
+<p>The admin initialises a Typhoon instance against an admin-provided TursoDB cloud database with <code>typhoon init --url URL --token TOK</code>. The database is shared with persona-core, which owns the <code>user</code> / <code>persona</code> schema and is expected to have been migrated to its current schema version before <code>typhoon init</code> runs. Typhoon's own schema migrations apply on top (channel inbox/outbox queue, signal store, memory store, tool registry, proposal queues, daemon state, schema-version row <code>('typhoon', N)</code>); they are idempotent — re-running the bootstrap on an already-initialised database is a no-op. The seed marks the deploying user as <code>admin</code> in persona-core's <code>user</code> table (or refuses to proceed if no such user exists yet) and seeds Typhoon's system-scoped config rows. After bootstrap the runtime is dormant — no daemon runs, no signals exist. One Typhoon runtime instance owns one TursoDB database that serves multiple users with multiple personas. The same cloud database may be reached from other machines for admin review or forge workflows, but running a second Typhoon runtime writer instance against that database is not supported.</p>
 
 <h3>Stage 2 — Online interaction</h3>
-<p>The operator opens a session through one of two channels. The Telegram channel goes through the channel gateway daemon (with the Telegram adapter); the external-agent channel uses no gateway at all and enters core directly via one-shot CLI invocations. Both paths feed into the same core, so core sees a uniform interface regardless of source.</p>
+<p>The operator opens a session through one of two channels. The Telegram channel goes through <code>typhoon gateway</code>: its edge loop handles external I/O and its worker loop consumes queued turns and invokes core. The external-agent channel uses no gateway or queue at all and enters core directly via one-shot CLI invocations. Both paths feed into the same core, so core sees a uniform interface regardless of source.</p>
 
-<p><strong>Telegram channel</strong> (<code>typhoon gateway</code> with the Telegram adapter enabled). The channel gateway is one daemon that hosts the agent loop for configured channels. For Telegram, the gateway polls through the Telegram adapter; the adapter speaks Telegram protocol and returns provider-neutral channel updates. On every incoming message, the gateway resolves the Telegram peer in two steps. <strong>Step 1 — channel binding to user:</strong> <code>(channel, bot_account_id, peer_id) → user_id</code>, via a verified binding row. A bound peer flows straight to step 2; an unbound peer goes through onboarding — the binding flow's exact shape is a DLD detail; the HLD only requires that a message is never accepted from an unverified peer. <strong>Step 2 — bot account to active persona:</strong> v0.1 maps one Telegram bot account to one persona via configuration, so the bot account that delivered the update determines which of the user's personas is active for this turn. Once the <code>(user_id, persona_slug)</code> pair is resolved, every step routes through core: the gateway asks core for that persona's relevant memories, sends the prompt plus available tools to the frontier LLM, hands any tool calls the LLM emits to core for execution (shell, filesystem, tools on PATH), feeds the results back to the LLM, loops until the LLM stops, and posts the final reply back through the Telegram adapter. As core dispatches each invocation, it tells the signal recorder to write a signal row tagged with that <code>persona_slug</code>. In this path Typhoon is the agent runtime; core is the dispatcher under it.</p>
+<p><strong>Telegram channel</strong>. The gateway edge loop is the only part of Typhoon that talks to Telegram. It polls through the Telegram adapter, normalizes provider-specific updates, deduplicates by provider update ID, and inserts inbound rows into the durable channel inbox. It also reads outbound rows from the channel outbox and sends replies through the same adapter. The gateway worker loop claims inbound rows with a lease, resolves the Telegram peer in two steps, and runs the agent loop. <strong>Step 1 — channel binding to user:</strong> <code>(channel, bot_account_id, peer_id) → user_id</code>, via a verified binding row. A bound peer flows straight to step 2; an unbound peer is not a usable Typhoon turn in v0.1. The worker loop marks the inbound row <code>dead_letter</code> with reason <code>binding_missing</code> and does not invoke core, does not write a signal, and does not enqueue a default reply. A later DLD may define an explicit no-identity/default-user policy, but the HLD does not assume one. <strong>Step 2 — bot account to active persona:</strong> v0.1 maps one Telegram bot account to one persona via configuration, so the bot account that delivered the update determines which of the user's personas is active for this turn. Once the <code>(user_id, persona_slug)</code> pair is resolved, every agent-loop step routes through core: the worker loop asks core for that persona's relevant memories and active tool manifest, core sends the prompt plus available tools to the frontier LLM, the LLM chooses any tool calls, and core mediates execution of those LLM-requested calls (shell, filesystem, tools on PATH) before feeding results back to the LLM. The loop continues until the LLM stops, and the worker loop writes the final reply to the channel outbox. The edge loop later sends the reply to Telegram. As core handles each invocation, it tells the signal recorder to write a signal row tagged with that <code>persona_slug</code>. In this path Typhoon Way is the harness agent; the gateway edge loop is only the external-system bridge.</p>
 
 <p><strong>External-agent channel</strong> (Claude Code, Cursor, Codex, …). The admin runs the agent on their machine; the agent hosts its own LLM client, its own tool dispatcher, and its own conversation loop. Typhoon never sees the frontier LLM. The agent uses Typhoon by invoking subcommands directly — <code>typhoon memory query</code> for retrieval context, <code>typhoon signal record</code> to report a tool call and outcome. In v0.1 only the admin uses this channel, so each invocation defaults to the admin's primary persona with no explicit identity argument; when a second persona wants this channel later, an explicit <code>--persona</code> flag will be added. Each invocation is a one-shot process that enters core through Typhoon's normal CLI dispatch; core then drives the recorder (or reads memory) just as it would for the Telegram-channel path. A signal row is a signal row regardless of which source delivered the call. In this path the agent runtime lives outside Typhoon, but channel data still flows into core and through the recorder into the signal store.</p>
 
-<p>This pattern generalizes — adding a future channel (Slack, Discord, web hooks) means writing a new gateway process that drives core through the same interface. Core does not change, the signal model does not change, and the management plane is unaffected.</p>
+<p>This pattern generalizes — adding a future channel (Slack, Discord, web hooks) means writing a new adapter and gateway edge-loop configuration that writes the same inbox/outbox schema. The gateway worker loop, core, signal model, and management plane stay unchanged unless the new channel needs channel-specific metadata in the normalized message envelope.</p>
 
 <p>After a turn closes (in either channel), a success flag is stamped onto the signal chain by a simple post-hoc rule: clean exit plus no corrective next turn. Signals accumulate; nothing else happens online.</p>
 
@@ -195,7 +200,7 @@ flowchart TB
 <p>The operator submits the delivery back through the tool manager with <code>typhoon tool propose submit &lt;id&gt; --requirements &lt;file&gt; --source &lt;file&gt; [--tests &lt;file&gt;]</code>. On submission, Typhoon attaches the hardened requirement, source, optional tests, declared dependencies, and forge correctness argument to the existing <code>cli_proposals</code> row, then runs the hardcoded-path lint. A failed path lint is fatal and bounces the proposal. Tier is not mechanically verified in v0.1; Dream's rough tier and the forge's revised tier are reviewed by the operator from the brief, requirement, source, dependencies, and correctness argument. On pass the proposal advances to <code>awaiting_user</code>. No tool-registry row is created at submit time; unfinished or unapproved forge work is proposal data, not an installed CLI.</p>
 <p>The operator reviews the proposal brief, hardened requirement, delivery, tests, and forge correctness argument together via the tool manager (<code>typhoon tool propose approve | reject</code>). Approval is the first point where a CLI enters the tool registry: the registry row is inserted, the tool binary is installed, a seed memory is written so the agent can discover the new tool, and — for a replacement — the predecessor is moved into <code>.history/</code>. The DB part is protected by a TursoDB transaction; the filesystem part is protected by the registry mutation protocol in §2.3. Persona proposals follow the same pattern with one substitution: the artifact is a persona-attribute value (one of <code>expression</code>, <code>mental_models</code>, <code>heuristics</code>, <code>antipatterns</code>, <code>limits</code> on the persona row) rather than a tool binary, and the atomic write updates persona-core's <code>persona</code> row instead of the filesystem. A pattern rejected three times stops dream from re-proposing it.</p>
 <p>After approval, the next lifecycle step is simply more online interaction. The installed CLI is shared through the registry, surfaced by memory retrieval, invoked as an ordinary subprocess on PATH, and measured by use/success counters. Those counters become future signals for Dream: a rising error rate can lead to a replacement proposal, and prolonged disuse can lead to a deprecation proposal. Operator-driven tool management is not a separate lifecycle stage; it is the management surface available throughout the loop for proposal review, installed-tool inspection, disable/enable, rollback, delete, purge, promote, dependency checks, and sync.</p>
-<p>The tool manager (<code>typhoon tool</code>) is the admin's direct, agent-independent control surface for proposal ingestion and the installed-tool registry, covering the entire lifecycle through one unified namespace. Every mutating <code>typhoon tool</code> subcommand requires <code>user.role='admin'</code>; non-admin processes can use installed tools but cannot mutate proposals or the registry. The ingestion half (<code>tool propose list / show / submit / approve / reject</code>) is what stage 4 invokes. <code>list</code>, <code>show</code>, and <code>submit</code> operate on <code>cli_proposals</code>; only <code>approve</code> creates or updates a registry row. The operations half acts on already-installed tools: read-only listing, inspection, and lineage (<code>tool list</code> with filters by tier or staleness, <code>tool show</code> for source/stats/origin, <code>tool diff</code> and <code>tool history</code> for version comparison) and state-changing commands (<code>tool disable</code> takes a tool off PATH while keeping the registry row; <code>tool enable</code> reverses it; <code>tool rollback</code> restores the previous version from <code>.history/</code>; <code>tool delete</code> marks the registry row <code>deleted</code> (retained for lineage and <code>tool history</code>) and archives the binary; <code>tool purge</code> hard-deletes the registry row and clears <code>.history/</code>; <code>tool promote</code> adopts a hand-written script the operator authored outside the dream loop and adds it as <code>approved_by='user'</code> with no origin proposal; <code>tool check-deps</code> scans declared external dependencies across the registry; <code>tool sync</code> reconciles installed binaries from approved registry rows on the current machine). Every installed-tool state change uses the registry mutation protocol so the DB row, checksum, and on-disk executable can be reconciled. Broader inspection paths are read-only: <code>typhoon sql</code> for SELECT queries, <code>typhoon dream stats</code> for the proposal funnel, and <code>typhoon health</code> for gateway/cron liveness. <code>typhoon sql</code> accepts SELECT only; writes (INSERT / UPDATE / DELETE / DDL) are hard-rejected so the inspection path can never accidentally mutate state.</p>
+<p>The tool manager (<code>typhoon tool</code>) is the admin's direct, agent-independent control surface for proposal ingestion and the installed-tool registry, covering the entire lifecycle through one unified namespace. Every mutating <code>typhoon tool</code> subcommand requires <code>user.role='admin'</code>; non-admin processes can use installed tools but cannot mutate proposals or the registry. The ingestion half (<code>tool propose list / show / submit / approve / reject</code>) is what stage 4 invokes. <code>list</code>, <code>show</code>, and <code>submit</code> operate on <code>cli_proposals</code>; only <code>approve</code> creates or updates a registry row. The operations half acts on already-installed tools: read-only listing, inspection, and lineage (<code>tool list</code> with filters by tier or staleness, <code>tool show</code> for source/stats/origin, <code>tool diff</code> and <code>tool history</code> for version comparison) and state-changing commands (<code>tool disable</code> takes a tool off PATH while keeping the registry row; <code>tool enable</code> reverses it; <code>tool rollback</code> restores the previous version from <code>.history/</code>; <code>tool delete</code> marks the registry row <code>deleted</code> (retained for lineage and <code>tool history</code>) and archives the binary; <code>tool purge</code> hard-deletes the registry row and clears <code>.history/</code>; <code>tool promote</code> adopts a hand-written script the operator authored outside the dream loop and adds it as <code>approved_by='user'</code> with no origin proposal; <code>tool check-deps</code> scans declared external dependencies across the registry; <code>tool sync</code> reconciles installed binaries from approved registry rows on the current machine). Every installed-tool state change uses the registry mutation protocol so the DB row, checksum, and on-disk executable can be reconciled. Broader inspection paths are read-only: <code>typhoon sql</code> for SELECT queries, <code>typhoon dream stats</code> for the proposal funnel, and <code>typhoon health</code> for gateway/cron liveness and queue backlog. <code>typhoon sql</code> accepts SELECT only; writes (INSERT / UPDATE / DELETE / DDL) are hard-rejected so the inspection path can never accidentally mutate state.</p>
 
 <h2 id="sec-2">2. Architecture</h2>
 <p class="placeholder">Purpose: describe Typhoon's structure from three complementary angles, then group the pieces into subsystems that partition the DLD.</p>
@@ -235,7 +240,7 @@ flowchart TB
   </tbody>
 </table>
 
-<p><strong>Presentation / interaction layer.</strong> Converts the outside world's events into internal requests and renders responses back out. It validates that a request is well-formed and extracts identity claims. It does not own use-case decisions or durable work.</p>
+<p><strong>Presentation / interaction layer.</strong> Converts the outside world's events into internal requests and renders responses back out. It validates that a request is well-formed and extracts identity claims. It does not own use-case decisions; durable handoff belongs to the Channel queue data-access API rather than to provider adapters.</p>
 
 <p><strong>Application / core layer.</strong> Owns Typhoon's use cases and orchestration. It coordinates the use plane and management plane, sequences work, validates workflow preconditions, and invokes the integration layer. It does not write stores directly and does not speak external service protocols directly.</p>
 
@@ -265,24 +270,24 @@ flowchart TB
   </thead>
   <tbody>
     <tr><td><b>Bootstrap</b></td><td>Application</td><td>Initialise a Typhoon instance against an admin-provided TursoDB URL/token (shared with persona-core): apply Typhoon's schema migrations on top of persona-core's, mark the deploying user as <code>admin</code>, write seed config. Idempotent.</td><td>Config, Identity &amp; persona resolution, TursoDB adapter</td></tr>
-    <tr><td><b>Channel gateway</b></td><td>Interaction + application</td><td>Single long-running channel workflow daemon. It polls configured Channel service adapters (Telegram adapter in v0.1), receives provider-neutral updates, resolves the channel peer to <code>(user_id, persona_slug)</code> — peer-to-user via verified binding, bot-account-to-persona via per-bot configuration in v0.1 — runs onboarding for unbound peers, converts channel updates into Typhoon invocations, and drives core scoped to the resolved persona.</td><td>Core, Identity &amp; persona resolution, Channel service adapters</td></tr>
-    <tr><td><b>External-agent endpoints</b></td><td>Interaction + application</td><td>Adapter logic for external-agent reports and queries: validate the input shape, default the active persona to the admin's primary persona (v0.1; explicit <code>--persona</code> later), invoke core. The <code>signal record</code> / <code>memory query</code> handlers are thin wrappers that call into this module.</td><td>Core, Identity &amp; persona resolution</td></tr>
+    <tr><td><b>Channel gateway</b></td><td>Interaction + application</td><td>Single long-running channel daemon with two internal loops. The edge loop polls configured Channel service adapters (Telegram adapter in v0.1), normalizes provider updates, deduplicates provider update IDs, writes inbound rows to the Channel queue, reads outbound rows, and posts replies. The worker loop claims inbound Channel queue rows, resolves the channel peer to <code>(user_id, persona_slug)</code> — peer-to-user via verified binding, bot-account-to-persona via per-bot configuration in v0.1 — dead-letters rows with no verified binding, converts resolved queued channel messages into Typhoon invocations, drives core scoped to the resolved persona, and writes replies to the Channel queue outbox.</td><td>Core, Channel queue, Identity &amp; persona resolution, Channel service adapters</td></tr>
     <tr><td><b>Scheduler</b></td><td>Application</td><td>Cron daemon and entry registry: tick on schedule, fire use-plane targets through core, spawn management-plane targets directly, track next-run times.</td><td>Core, Config</td></tr>
-    <tr><td><b>Core</b></td><td>Application</td><td>Use-plane dispatcher: receive invocations carrying a <code>persona_slug</code> from gateway / scheduler / external-agent endpoints, orchestrate executors (LLM call, tool exec, memory read scoped to the persona), drive the recorder for each invocation.</td><td>Signal recorder, Tool registry, Memory store, LLM service adapters</td></tr>
+    <tr><td><b>Core</b></td><td>Application</td><td>Use-plane dispatcher: receive invocations carrying a <code>persona_slug</code> from the gateway worker loop, the scheduler, or the use-plane CLI subcommands (<code>typhoon signal record</code> / <code>typhoon memory query</code>, which invoke core directly with the admin's primary persona by default; explicit <code>--persona</code> overrides), orchestrate LLM calls, persona-scoped memory reads, LLM-requested tool execution for channel turns, and configured tool/subcommand execution for scheduled use targets; drive the recorder for each invocation.</td><td>Signal recorder, Tool registry, Memory store, LLM service adapters</td></tr>
     <tr><td><b>Signal recorder</b></td><td>Application</td><td>Sole writer to the signal store. Driven only by core; persists one signal row per dispatched invocation, tagged with the originating <code>persona_slug</code>.</td><td>Signal store</td></tr>
     <tr><td><b>Dream cycle</b></td><td>Application</td><td>Standalone batch (file-locked single-writer). Runs light → REM → deep phases against accumulated signals; writes memories and proposals; prunes stale signals.</td><td>Signal store, Memory store, Proposal queue, Tool registry, LLM service adapters</td></tr>
     <tr><td><b>Tool manager</b></td><td>Interaction + application</td><td>Full proposal and installed-tool lifecycle through the unified <code>typhoon tool</code> namespace: ingest proposal briefs and forge deliveries (submit requires hardened requirements, source, optional tests, and path lint) and operate installed tools (list/show/diff/disable/enable/rollback/delete/purge/promote/sync). Proposal submit does not touch the registry; approval is the first registry mutation. Every mutating subcommand checks <code>admin</code> role on the invoking user; non-admin users may invoke read-only listing of tools.</td><td>Proposal queue, Tool registry, Identity &amp; persona resolution (role check), path-lint helper</td></tr>
     <tr><td><b>Persona manager</b></td><td>Interaction + application</td><td>Per-persona flow for persona-attribute proposals (<code>typhoon persona list / show / approve / reject</code>): a persona's owning user may approve proposals targeting that persona; an <code>admin</code> may approve any. Approval atomically updates one of the persona row's attribute columns and marks the proposal approved.</td><td>Proposal queue, Persona attributes (write through persona-core's <code>persona</code> table), Identity &amp; persona resolution (role check)</td></tr>
-    <tr><td><b>Health inspector</b></td><td>Interaction + application</td><td>Read-only <code>typhoon health</code> implementation. Reports gateway and cron daemon liveness, optional heartbeat timestamps, DB latency, and recent recorder/dream status. One-shot CLI commands do not have health.</td><td>Config, Signal store, Dream run log, TursoDB adapter</td></tr>
+    <tr><td><b>Health inspector</b></td><td>Interaction + application</td><td>Read-only <code>typhoon health</code> implementation. Reports gateway and cron daemon liveness, optional heartbeat timestamps, queue backlog/oldest age, DB latency, and recent recorder/dream status. One-shot CLI commands do not have health.</td><td>Config, Channel queue, Signal store, Dream run log, TursoDB adapter</td></tr>
     <tr><td><b>Tool registry</b></td><td>Integration / data access</td><td>Data-access library for tool metadata rows and binary references. Provides transactional reads/writes, checksum persistence, filesystem reconciliation, lineage/history queries, active-tools-only filtering, and archival mechanics.</td><td>TursoDB adapter, Filesystem adapter</td></tr>
     <tr><td><b>Memory store</b></td><td>Integration / data access</td><td>Data-access library for memories. Stores and retrieves rows scoped by <code>persona_slug</code>; exposes bounded retrieval primitives used by core and extraction/write primitives used by dream.</td><td>TursoDB adapter</td></tr>
     <tr><td><b>Signal store</b></td><td>Integration / data access</td><td>Data-access library for signals. Stores signal rows, persona tags, success fields, and run metadata; exposes recorder writes, dream reads, persona-scoped reads, and stale-prune primitives.</td><td>TursoDB adapter</td></tr>
     <tr><td><b>Proposal queue</b></td><td>Integration / data access</td><td>Data-access library for <code>cli_proposals</code> and <code>persona_proposals</code>. Persists statuses, rejection counters, forge delivery fields, and atomic proposal-row updates.</td><td>TursoDB adapter</td></tr>
+    <tr><td><b>Channel queue</b></td><td>Integration / data access</td><td>Durable inbox/outbox data-access library for channel messages. Stores normalized inbound updates, outbound replies, provider update IDs, delivery status, attempt counts, lease owner/expiry, next-at timestamps, and dead-letter details. It is the handoff boundary between the gateway edge loop and the Typhoon Way worker loop; v0.1 is Turso-backed, not in-memory.</td><td>TursoDB adapter</td></tr>
     <tr><td><b>Config</b></td><td>Integration / data access</td><td>Data-access library for typed system-scoped Typhoon config values (e.g., <code>dream.cron</code>, <code>dream.min_score</code>). Per-persona behavior config does not live here; it is the persona row's attribute bundle, written by Persona attributes. Exposes get/set/list/validate primitives with database-level defense-in-depth checks.</td><td>TursoDB adapter</td></tr>
     <tr><td><b>Identity &amp; persona resolution</b></td><td>Integration / data access</td><td>Data-access library covering persona-core's <code>user</code> and <code>persona</code> tables (read-only for Typhoon's purposes), plus Typhoon's own channel-binding table. Resolves <code>(channel, bot_account_id, peer_id) → (user_id, persona_slug)</code>, looks up <code>user.role</code> for admin checks, manages binding lifecycle (create / verify / revoke), enforces the per-bot-persona configuration. Does not authenticate users — persona-core's OAuth layer does that.</td><td>TursoDB adapter</td></tr>
     <tr><td><b>Persona attributes</b></td><td>Integration / data access</td><td>Data-access library for persona-core's <code>persona</code> row attribute columns (<code>expression</code>, <code>mental_models</code>, <code>heuristics</code>, <code>antipatterns</code>, <code>limits</code>). Typhoon writes these only through approved persona proposals; persona-core also writes them through direct user edits. Reads are filtered by <code>persona_slug</code>.</td><td>TursoDB adapter</td></tr>
     <tr><td><b>Storage adapters</b></td><td>Integration / data access</td><td>Driver-facing adapters for database and artifact storage. They hide store-specific connection, transaction, filesystem, and error mechanics from data-access libraries.</td><td>Data store layer</td></tr>
-    <tr><td><b>Channel service adapters</b></td><td>Integration / service adapters</td><td>Switchable provider implementations under the channel gateway. The Telegram adapter is the v0.1 instance. Each adapter exposes provider-neutral calls such as <code>poll_updates</code> and <code>post_message</code>, maps provider DTOs/errors/rate limits into Typhoon channel DTOs, and does not own identity resolution, onboarding, or core dispatch.</td><td>External channel services</td></tr>
+    <tr><td><b>Channel service adapters</b></td><td>Integration / service adapters</td><td>Switchable provider implementations used by the gateway edge loop. The Telegram adapter is the v0.1 instance. Each adapter exposes provider-neutral calls such as <code>poll_updates</code> and <code>post_message</code>, maps provider DTOs/errors/rate limits into Typhoon channel DTOs, and does not own durable queue semantics, identity resolution, binding-missing policy, or core dispatch.</td><td>External channel services</td></tr>
     <tr><td><b>LLM service adapters</b></td><td>Integration / service adapters</td><td>Typed clients and request/response mapping for frontier and batch LLM calls. They speak provider protocols but do not own prompting strategy or workflow decisions.</td><td>External LLM services</td></tr>
   </tbody>
 </table>
@@ -297,16 +302,16 @@ flowchart TB
   </thead>
   <tbody>
     <tr><td>Initialise a Typhoon instance</td><td>Bootstrap → Config + Identity &amp; persona resolution (mark deploying user as <code>admin</code>) → (TursoDB adapter)</td></tr>
-    <tr><td>Telegram-channel turn (full agent loop)</td><td>Channel gateway (via Telegram adapter ↔ Telegram service) → Identity &amp; persona resolution (resolve peer to user, bot account to persona) → Core → Memory store (retrieval, scoped to persona) → LLM service adapters → Tool registry → Signal recorder → Signal store (tagged with persona)</td></tr>
-    <tr><td>Telegram onboarding (unbound peer)</td><td>Channel gateway → Channel service adapters (Telegram adapter) → Identity &amp; persona resolution (create binding to existing user; mark verified)</td></tr>
-    <tr><td>External-agent tool report</td><td>External-agent endpoints → Identity &amp; persona resolution (default to admin's primary persona) → Core → Signal recorder → Signal store</td></tr>
-    <tr><td>External-agent memory query</td><td>External-agent endpoints → Identity &amp; persona resolution (default to admin's primary persona) → Core → Memory store (scoped to persona)</td></tr>
+    <tr><td>Telegram-channel turn (full agent loop)</td><td>Channel gateway edge loop (via Telegram adapter ↔ Telegram service) → Channel queue inbox → Channel gateway worker loop → Identity &amp; persona resolution (resolve peer to user, bot account to persona) → Core → Memory store (retrieval, scoped to persona) + Tool registry (available tool manifest) → LLM service adapters → LLM-selected tool calls mediated by core → Signal recorder → Signal store (tagged with persona) → Channel queue outbox → Channel gateway edge loop → Telegram adapter</td></tr>
+    <tr><td>Telegram unbound peer</td><td>Channel gateway edge loop → Channel queue inbox → Channel gateway worker loop → Identity &amp; persona resolution (no verified binding) → Channel queue marks inbound <code>dead_letter</code> with <code>binding_missing</code>; no core dispatch and no outbound reply</td></tr>
+    <tr><td>External-agent tool report (<code>typhoon signal record</code>)</td><td>CLI dispatch → Core (default <code>persona_slug</code> to admin's primary persona) → Signal recorder → Signal store</td></tr>
+    <tr><td>External-agent memory query (<code>typhoon memory query</code>)</td><td>CLI dispatch → Core (default <code>persona_slug</code> to admin's primary persona) → Memory store (scoped to persona)</td></tr>
     <tr><td>Scheduled dream run</td><td>Scheduler → Dream cycle → Signal store + Memory store + Tool registry + LLM service adapters + Proposal queue</td></tr>
     <tr><td>Forge submission &amp; ratification</td><td>Admin → Tool manager (admin role check, path lint) → Proposal queue → Tool registry <i>(approval only)</i></td></tr>
     <tr><td>Persona proposal ratification</td><td>Persona owner or admin → Persona manager (role check) → Proposal queue → Persona attributes (<code>persona</code> row column) <i>(atomic at approve)</i></td></tr>
     <tr><td>Tool replacement</td><td>Dream cycle → Proposal queue → Admin → Tool manager → Tool registry + filesystem <i>(registry mutation protocol, <code>.history/</code>)</i></td></tr>
     <tr><td>Tool deprecation</td><td>Dream cycle → Proposal queue → Admin → Tool manager → Tool registry</td></tr>
-    <tr><td>Daemon-liveness check</td><td>Health inspector → daemon heartbeat/status rows for Channel gateway + Scheduler</td></tr>
+    <tr><td>Daemon-liveness check</td><td>Health inspector → daemon heartbeat/status rows for Channel gateway + Scheduler; Channel queue backlog/oldest-age metrics</td></tr>
   </tbody>
 </table>
 
@@ -319,8 +324,7 @@ flowchart TB
     subgraph AppModules["Application modules"]
       direction TB
       BOOT[Bootstrap]
-      TGGW[Channel gateway]
-      EXTEP[External-agent endpoints]
+      GATEWAY[Channel gateway<br/>edge + worker loops]
       SCHED[Scheduler]
       CORE[Core]
       REC[Signal recorder]
@@ -335,6 +339,7 @@ flowchart TB
       REG[Tool registry<br/>shared]
       MEM[Memory store<br/>per persona]
       SIG[Signal store<br/>per persona]
+      CHQ[Channel queue<br/>inbox + outbox]
       PROP[Proposal queue<br/>cli + persona]
       CFG[Config<br/>system-scoped]
       ID[Identity &amp; persona<br/>+ role lookup]
@@ -348,25 +353,24 @@ flowchart TB
     end
 
     %% Application-internal edges
-    TGGW --> CORE
-    EXTEP --> CORE
+    GATEWAY --> CORE
     SCHED --> CORE
     CORE ==>|drives| REC
 
     %% Service adapter edges
-    TGGW --> CHAN
+    GATEWAY --> CHAN
     CORE --> LLM
     DREAM --> LLM
 
     %% Identity reads at the edges
-    TGGW --> ID
-    EXTEP --> ID
+    GATEWAY --> ID
     TOOL --> ID
     PERSONA--> ID
 
     %% Application to data access
     CORE --> REG
     CORE --> MEM
+    GATEWAY --> CHQ
     REC --> SIG
     DREAM --> SIG
     DREAM --> MEM
@@ -380,11 +384,11 @@ flowchart TB
     BOOT --> ID
 
     %% Health reads daemon liveness/heartbeat state
-    HEALTH -.reads liveness.-> TGGW
+    HEALTH -.reads liveness.-> GATEWAY
     HEALTH -.reads liveness.-> SCHED
 </div>
 
-<p>Three relationships in this diagram carry invariants worth naming. <strong>Core ⇒ Signal recorder</strong> is the only edge into the recorder; nothing else writes to the signal store. <strong>Dream → Proposal queue</strong> and <strong>Tool manager → Proposal queue / Tool registry</strong> are sequential in the lifecycle — dream writes a proposal, the tool manager later submits forge output and, on approval, creates or updates the registry. They never race because dream is file-locked and the tool manager runs only on admin action. <strong>Tool manager → Tool registry</strong> and <strong>Persona manager → Persona attributes</strong> are the two atomic-mutation edges; both are wrapped in transactions that span the corresponding Proposal queue update.</p>
+<p>Four relationships in this diagram carry invariants worth naming. <strong>Channel gateway ↔ Channel queue</strong> is the durable handoff between external channel I/O and Typhoon Way's agent loop; inside the gateway, the edge loop never calls core and the worker loop never talks to Telegram directly. <strong>Core ⇒ Signal recorder</strong> is the only edge into the recorder; nothing else writes to the signal store. <strong>Dream → Proposal queue</strong> and <strong>Tool manager → Proposal queue / Tool registry</strong> are sequential in the lifecycle — dream writes a proposal, the tool manager later submits forge output and, on approval, creates or updates the registry. They never race because dream is file-locked and the tool manager runs only on admin action. <strong>Tool manager → Tool registry</strong> and <strong>Persona manager → Persona attributes</strong> are the two atomic-mutation edges; both are wrapped in transactions that span the corresponding Proposal queue update.</p>
 
 <h3 id="sec-2-3">2.3 Process view</h3>
 
@@ -397,23 +401,22 @@ flowchart TB
     <tr><th>Process</th><th>Lifetime</th><th>Singleton?</th><th>How enforced</th></tr>
   </thead>
   <tbody>
-    <tr><td><b>Channel gateway</b> (<code>typhoon gateway</code>)</td><td>Long-running daemon</td><td>Yes</td><td>Operator deploys one gateway process; configured channel adapters handle Telegram and future channels</td></tr>
+    <tr><td><b>Channel gateway</b> (<code>typhoon gateway</code>)</td><td>Long-running daemon</td><td>Yes per channel account</td><td>Operator deploys one gateway per configured bot/channel account. The daemon hosts both the edge loop and worker loop; provider update IDs and channel queue uniqueness dedupe repeated delivery.</td></tr>
     <tr><td><b>Scheduler</b> (<code>typhoon cron</code>)</td><td>Long-running daemon</td><td>Yes</td><td>Operator deploys one</td></tr>
-    <tr><td><b>Health inspector</b> (<code>typhoon health</code>)</td><td>One-shot per invocation</td><td>No</td><td>Reads gateway/cron daemon liveness and heartbeat state</td></tr>
+    <tr><td><b>Health inspector</b> (<code>typhoon health</code>)</td><td>One-shot per invocation</td><td>No</td><td>Reads gateway/cron daemon liveness, heartbeat state, and channel queue backlog</td></tr>
     <tr><td><b>Dream batch</b> (<code>typhoon dream</code>)</td><td>Transient (cron-fired or manual)</td><td>Yes</td><td>Filesystem lock (<code>dream.lock</code>); concurrent invocations exit with lock error</td></tr>
     <tr><td><b>Tool manager</b> (<code>typhoon tool ...</code>)</td><td>One-shot per invocation</td><td>No</td><td>DB transactions serialise registry state; per-tool filesystem locks serialise binary writes</td></tr>
     <tr><td><b>Persona manager</b> (<code>typhoon persona ...</code>)</td><td>One-shot per invocation</td><td>No</td><td>Same — DB transactions serialise</td></tr>
-    <tr><td><b>External-agent endpoints</b> (<code>typhoon signal record</code>, <code>typhoon memory query</code>)</td><td>One-shot per invocation</td><td>No</td><td>High-concurrency expected; DB transactions serialise writes; reads are non-blocking</td></tr>
     <tr><td><b>Bootstrap</b> (<code>typhoon init --url URL --token TOK</code>)</td><td>One-shot</td><td>Idempotent</td><td><code>schema_migrations</code> version check; re-running is a no-op</td></tr>
     <tr><td><b>Inspection</b> (<code>typhoon sql</code>, <code>typhoon dream stats</code>, <code>typhoon config get</code>)</td><td>One-shot</td><td>No</td><td>Read-only; no coordination needed</td></tr>
   </tbody>
 </table>
 
-<p>Two long-running daemons, one transient that needs an exclusive lock, and several flavours of one-shot. There is no inter-process IPC: every process coordinates through TursoDB and the filesystem only. New processes can join at any time without coordination handshake — they read state, optionally take a lock, do their work, exit.</p>
+<p>Two long-running daemons, one transient that needs an exclusive lock, and several flavours of one-shot. The channel path is one daemon, but its edge loop and worker loop still hand work through the durable Turso-backed channel queue. That queue is intentionally not an in-memory Rust channel: it preserves inbound work across daemon restarts, gives retry/dead-letter semantics, records delivery state, and leaves room to split the loops into separate deployments later if needed. Everything else coordinates through TursoDB transactions, queue leases, and filesystem locks. New processes can join at any time without a handshake — they read state, optionally claim a queued item or take a lock, do their work, exit.</p>
 
-<h4>Coordination — transactions and the dream lock</h4>
+<h4>Coordination — transactions, queue leases, and the dream lock</h4>
 
-<p>Three mechanisms hold the runtime together: SQL transactions for database state changes, per-tool filesystem locks for installed-tool mutations, and the dream lock for the one batch job that must not run twice.</p>
+<p>Four mechanisms hold the runtime together: SQL transactions for database state changes, channel queue leases for gateway edge/worker decoupling, per-tool filesystem locks for installed-tool mutations, and the dream lock for the one batch job that must not run twice.</p>
 
 <p><strong>Transactions.</strong> Every state change that affects more than one database row is wrapped in <code>BEGIN IMMEDIATE … COMMIT</code> with rollback on any database failure. Operations that also touch the filesystem use the registry mutation protocol below so the DB row and executable can be reconciled deterministically. The atomic DB operations:</p>
 
@@ -428,6 +431,8 @@ flowchart TB
     <tr><td>Forge submission</td><td>requirements + source + optional tests attach to proposal + path lint + proposal status → awaiting_user</td></tr>
   </tbody>
 </table>
+
+<p><strong>Channel queue.</strong> The channel queue is durable loop-to-loop handoff, implemented as Turso rows rather than an in-memory channel. The inbound side stores normalized channel updates with provider update IDs, channel metadata, payload, status, attempt count, lease owner, lease expiry, and next-at time. The outbound side stores reply payloads with delivery status, attempt count, lease fields, and provider message IDs after successful send. The gateway edge loop inserts inbox rows and claims outbox rows; the gateway worker loop claims inbox rows and inserts outbox rows. Claims are short leases written inside transactions, so a crashed process eventually releases work by lease expiry. Repeated provider delivery is deduped with a uniqueness key such as <code>(channel, bot_account_id, provider_update_id)</code>. Items that exceed retry limits move to a dead-letter state for inspection rather than blocking the queue.</p>
 
 <p>SQL transactions serialize database state, but they do not make filesystem writes transactional. If two processes write the same path without coordination, the filesystem gives last-writer-wins behavior; it will not know which write matches the committed registry row. Typhoon therefore treats installed-tool mutation as a registry protocol, not a raw file copy. The normal mutation path is:</p>
 
@@ -447,7 +452,7 @@ flowchart TB
 
 <h4>Use plane vs. management plane at runtime</h4>
 
-<p>The runtime makes the §1 use/management split concrete in a single dimension: does the process call core during its work? Use-plane processes do — channel gateway in every turn of its agent loop, the scheduler when it fires a use-plane entry, the external-agent endpoints when they handle a report or query. Their work generates signals because core drives the recorder. Management-plane processes do not — tool manager, persona manager, dream, bootstrap, health, and inspection all operate directly on application/data-access modules, never through core, and never produce signals as a side effect of their work. The same Typhoon binary serves both planes; which one a given process belongs to is determined by which subcommand was invoked.</p>
+<p>The runtime makes the §1 use/management split concrete in one question: does the process call core during its work? Use-plane processes do — the gateway worker loop in every claimed channel turn, the scheduler when it fires a use-plane entry, and the use-plane CLI subcommands (<code>typhoon signal record</code> / <code>typhoon memory query</code>) when invoked. Their work generates signals because core drives the recorder. The gateway edge loop is channel-edge code: it does not call core and does not generate signals; it only moves messages between external channel services and the durable queue. Management-plane processes do not — tool manager, persona manager, dream, bootstrap, health, and inspection all operate directly on application/data-access modules, never through core, and never produce signals as a side effect of their work. The same Typhoon binary serves every role; which role a given process belongs to is determined by which subcommand was invoked.</p>
 
 <p>One subtlety: when cron fires a management-plane subcommand (for example, the seeded <code>typhoon dream</code> entry), it spawns that subcommand directly rather than routing through core. No signal is recorded for the act of firing. Scheduled management activity is observed through its own operational tables such as <code>dream_runs</code> and through daemon health, not through the signal store.</p>
 
@@ -458,15 +463,15 @@ flowchart TB
 <table>
   <thead><tr><th>Interface</th><th>Involved systems</th><th>Messages / activities</th><th>Rules</th></tr></thead>
   <tbody>
-    <tr><td>Channel turn</td><td>Channel gateway ↔ Telegram adapter ↔ Telegram service ↔ core</td><td><code>poll_updates</code>, resolve or onboard peer, dispatch invocation, <code>post_message</code></td><td>Gateway owns workflow; Telegram adapter is one switchable channel-adapter implementation</td></tr>
-    <tr><td>External-agent endpoint</td><td>External agent CLI ↔ endpoint process ↔ core</td><td>Record signal, query memory, return structured CLI output</td><td>v0.1 defaults active persona to the admin's primary persona unless an explicit <code>--persona</code> is given</td></tr>
+    <tr><td>Channel ingress/egress</td><td>Gateway edge loop ↔ Telegram adapter ↔ Telegram service ↔ Channel queue</td><td><code>poll_updates</code>, enqueue normalized inbound update, claim outbound reply, <code>post_message</code></td><td>Gateway edge loop owns external channel I/O and adapter rate-limit/retry handling; it never invokes core</td></tr>
+    <tr><td>Queued channel turn</td><td>Gateway worker loop ↔ Channel queue ↔ Identity &amp; persona resolution ↔ core</td><td>Claim inbound row, resolve peer, dispatch invocation for resolved peers, enqueue outbound reply, ack inbound row; mark unresolved rows dead-letter with reason <code>binding_missing</code></td><td>Gateway worker loop owns Typhoon Way's channel agent loop; queue leases decouple it from external channel availability</td></tr>
     <tr><td>Scheduled execution</td><td>Scheduler ↔ core / management process / tool subprocess</td><td>Fire use-plane target through core, including tool subprocess execution when the target requires it; fire management target directly</td><td>Only use-plane targets produce signals; management targets are observed through their own tables</td></tr>
-    <tr><td>LLM call</td><td>Core or dream ↔ LLM service adapter ↔ LLM service</td><td>Prompt request, tool-loop context, structured response</td><td>Application code never embeds provider wire formats; adapter is protocol-only</td></tr>
+    <tr><td>LLM call</td><td>Core or dream ↔ LLM service adapter ↔ LLM service</td><td>Prompt request, available tool manifest, model-selected tool calls, structured response</td><td>In channel turns the LLM selects tool calls; core only supplies the manifest, mediates execution of requested calls, and records the result. Application code never embeds provider wire formats; adapter is protocol-only</td></tr>
     <tr><td>State access</td><td>Application process ↔ data-access API ↔ data store</td><td>Memory query, registry lookup, proposal mutation, config mutation, identity lookup</td><td>All store access uses typed data-access APIs; multi-row writes use transactions</td></tr>
     <tr><td>Signal recording</td><td>Core ↔ signal recorder ↔ signal store</td><td>Persist invocation outcome and success tags</td><td>Core is the only process that drives the recorder</td></tr>
     <tr><td>Registry mutation</td><td>Tool manager ↔ data-access API ↔ TursoDB and filesystem</td><td>Approve, promote, rollback, enable, disable, delete, purge, sync</td><td>Admin-gated (<code>user.role='admin'</code>); DB is source of truth; filesystem mutation follows the registry protocol</td></tr>
     <tr><td>Dream batch</td><td>Dream process ↔ data-access API / LLM adapter</td><td>Read signals and memories; produce memories, CLI proposal briefs, and persona proposals; delete stale signals</td><td><code>dream.lock</code> enforces single batch; dream proposes but does not ratify</td></tr>
-    <tr><td>Health inspection</td><td>Health inspector ↔ data-access API ↔ daemon state rows</td><td>Read gateway/cron liveness, heartbeat freshness, DB latency, recent recorder/dream status</td><td>Only gateway and scheduler have daemon health state</td></tr>
+    <tr><td>Health inspection</td><td>Health inspector ↔ data-access API ↔ daemon state rows</td><td>Read gateway/cron liveness, heartbeat freshness, queue backlog, DB latency, recent recorder/dream status</td><td>Only gateway and scheduler have daemon health state</td></tr>
   </tbody>
 </table>
 
@@ -474,84 +479,84 @@ flowchart TB
 
 <p>Each sequence diagram lists systems across the top and time flows downward. Arrows crossing lanes are the message signatures exchanged between systems; notes capture the runtime rules that influence the sequence.</p>
 
-<h5>Channel use turn</h5>
+<h5>Channel edge delivery</h5>
 
 <div class="mermaid">
 sequenceDiagram
     participant Telegram as Telegram service
     participant Adapter as Telegram adapter
-    participant Gateway as Channel gateway
-    participant Identity as Identity &amp; persona resolution
+    participant Edge as Gateway edge loop
+    participant Queue as Channel queue
+
+    Edge->>Adapter: poll_updates(channel_id, cursor)
+    Adapter->>Telegram: getUpdates(bot_token, offset)
+    Telegram-->>Adapter: telegram_updates
+    Adapter-->>Edge: channel_updates(channel_id, bot_account_id, peer_id, update_id, payload)
+    Edge->>Queue: enqueue_inbound(update_id, channel_update)
+    Queue-->>Edge: enqueued_or_duplicate
+    Edge->>Queue: claim_outbound(gateway_id, lease_ttl)
+    alt outbound ready
+      Queue-->>Edge: outbound_message(channel_id, peer_id, reply)
+      Edge->>Adapter: post_message(channel_id, peer_id, reply)
+      Adapter->>Telegram: sendMessage(chat_id, reply)
+      Telegram-->>Adapter: send_result(message_id)
+      Adapter-->>Edge: delivery_result(message_id)
+      Edge->>Queue: mark_outbound_delivered(outbound_id, provider_message_id)
+    else no outbound ready
+      Queue-->>Edge: none
+    end
+    Note over Edge,Queue: Edge loop owns external channel IO only and never resolves identity or calls core.
+</div>
+
+<h5>Queued gateway worker turn</h5>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Queue as Channel queue
+    participant Worker as Gateway worker loop
+    participant Identity as Identity and persona resolution
     participant Core as Core dispatcher
     participant Data as Data-access APIs
     participant LLMAdapter as LLM adapter
     participant LLM as LLM service
-    participant Tool as Forged tool
+    participant Tool as Tool subprocess
     participant Recorder as Signal recorder
 
-    Gateway->>Adapter: poll_updates(channel_id, cursor)
-    Adapter->>Telegram: getUpdates(bot_token, offset)
-    Telegram-->>Adapter: telegram_updates
-    Adapter-->>Gateway: channel_update(channel_id, bot_account_id, peer_id, text, attachments)
-    Gateway->>Identity: resolve(channel, bot_account_id, peer_id)
-    alt bound peer
-      Identity-->>Gateway: (user_id, persona_slug)
-      Gateway->>Core: dispatch(invocation, persona_slug)
-      Core->>Data: query_memory(persona_slug, request)
-      Data-->>Core: memory_context
-      Core->>Data: lookup_active_tools()
-      Data-->>Core: tool_manifest
-      loop until final model turn
-        Core->>LLMAdapter: complete(prompt, memory_context, tool_manifest)
-        LLMAdapter->>LLM: provider_request(messages, tools)
-        LLM-->>LLMAdapter: provider_response(content, tool_calls)
-        LLMAdapter-->>Core: model_turn(content, tool_calls)
-        opt tool call requested
-          Core->>Tool: execute(tool_name, args, env)
-          Tool-->>Core: tool_result(exit_code, stdout, stderr)
+    Worker->>Queue: claim_inbound(gateway_id, lease_ttl)
+    alt inbound ready
+      Queue-->>Worker: inbound_message(channel_id, bot_account_id, peer_id, text, attachments)
+      Worker->>Identity: resolve(channel, bot_account_id, peer_id)
+      alt bound peer
+        Identity-->>Worker: (user_id, persona_slug)
+        Worker->>Core: dispatch(invocation, persona_slug)
+        Core->>Data: query_memory(persona_slug, request)
+        Data-->>Core: memory_context
+        Core->>Data: lookup_active_tools()
+        Data-->>Core: tool_manifest
+        loop until final model turn
+          Core->>LLMAdapter: complete(prompt, memory_context, tool_manifest)
+          LLMAdapter->>LLM: provider_request(messages, tools)
+          LLM-->>LLMAdapter: provider_response(content, tool_calls)
+          LLMAdapter-->>Core: model_turn(content, tool_calls)
+          opt LLM requested tool call
+            Core->>Tool: execute_requested_tool(tool_name, args, env)
+            Tool-->>Core: tool_result(exit_code, stdout, stderr)
+          end
         end
+        Core->>Recorder: record_signal(invocation, result, success_tags)
+        Recorder->>Data: insert_signal(persona_slug, signal)
+        Core-->>Worker: dispatch_result(reply)
+        Worker->>Queue: enqueue_outbound(channel_id, peer_id, reply)
+        Worker->>Queue: ack_inbound(message_id)
+      else unbound peer
+        Identity-->>Worker: binding_missing
+        Worker->>Queue: mark_inbound_dead_letter(message_id, binding_missing)
       end
-      Core->>Recorder: record_signal(invocation, result, success_tags)
-      Recorder->>Data: insert_signal(persona_slug, signal)
-      Core-->>Gateway: dispatch_result(reply)
-      Gateway->>Adapter: post_message(channel_id, peer_id, reply)
-      Adapter->>Telegram: sendMessage(chat_id, reply)
-      Telegram-->>Adapter: send_result(message_id)
-      Adapter-->>Gateway: delivery_result(message_id)
-    else unbound peer
-      Identity-->>Gateway: binding_missing
-      Gateway->>Identity: create_onboarding_challenge(channel, bot_account_id, peer_id)
-      Identity-->>Gateway: claim_token
-      Gateway->>Adapter: post_message(channel_id, peer_id, onboarding_prompt)
-      Adapter->>Telegram: sendMessage(chat_id, onboarding_prompt)
-      Telegram-->>Adapter: send_result(message_id)
-      Adapter-->>Gateway: delivery_result(message_id)
+    else no inbound ready
+      Queue-->>Worker: none
     end
-    Note over Gateway,Recorder: Core is the only caller that drives signal recording.
-</div>
-
-<h5>External-agent endpoint</h5>
-
-<div class="mermaid">
-sequenceDiagram
-    participant Agent as External agent CLI
-    participant Endpoint as Typhoon endpoint
-    participant Core as Core dispatcher
-    participant Data as Data-access APIs
-    participant Recorder as Signal recorder
-
-    Agent->>Endpoint: signal_record(payload) / memory_query(request)
-    Endpoint->>Core: dispatch(endpoint_request, persona_slug)
-    alt memory query
-      Core->>Data: query_memory(persona_slug, request)
-      Data-->>Core: memory_results
-    else signal record
-      Core->>Recorder: record_signal(endpoint_request, result, success_tags)
-      Recorder->>Data: insert_signal(persona_slug, signal)
-    end
-    Core-->>Endpoint: endpoint_result(status, body)
-    Endpoint-->>Agent: cli_output(status, body)
-    Note over Endpoint,Core: v0.1 defaults external-agent identity to operator.
+    Note over Queue,Worker: Durable queue decouples external channel availability from Typhoon Way's agent loop.
+    Note over Worker,Recorder: Core is the only caller that drives signal recording.
 </div>
 
 <h5>Scheduled execution</h5>
@@ -561,7 +566,7 @@ sequenceDiagram
     participant Cron as Scheduler
     participant Core as Core dispatcher
     participant Dream as Dream batch
-    participant Tool as Forged tool
+    participant Tool as Configured tool
     participant Recorder as Signal recorder
     participant Data as Data-access APIs
 
@@ -621,7 +626,7 @@ sequenceDiagram
 sequenceDiagram
     participant Operator as Operator (admin user)
     participant Manager as Tool manager
-    participant Identity as Identity &amp; persona resolution
+    participant Identity as Identity and persona resolution
     participant Queue as Proposal queue
     participant Registry as Tool registry
     participant Memory as Memory store
@@ -664,8 +669,10 @@ sequenceDiagram
     participant Data as Data-access APIs
 
     Operator->>Health: health()
-    Health->>Data: read_daemon_state(gateway, scheduler)
+    Health->>Data: read_daemon_state(channel_gateway, scheduler)
     Data-->>Health: liveness_and_heartbeat
+    Health->>Data: read_channel_queue_stats()
+    Data-->>Health: backlog_and_oldest_age
     Health->>Data: measure_db_latency()
     Data-->>Health: db_latency
     Health->>Data: read_recent_recorder_and_dream_status()
@@ -679,18 +686,18 @@ sequenceDiagram
 <table>
   <thead><tr><th>Check</th><th>Typhoon answer</th></tr></thead>
   <tbody>
-    <tr><td>Determine interfaces</td><td>The interface table enumerates channel, external-agent, scheduler, LLM, state-access, recorder, registry-mutation, dream, and health interfaces; the structurally significant flows get sequence diagrams.</td></tr>
+    <tr><td>Determine interfaces</td><td>The interface table enumerates channel, scheduler, LLM, state-access, recorder, registry-mutation, dream, and health interfaces; the structurally significant flows get sequence diagrams. The use-plane CLI subcommands (<code>typhoon signal record</code> / <code>typhoon memory query</code>) reuse the state-access and recorder interfaces through normal CLI dispatch.</td></tr>
     <tr><td>Identify involved systems</td><td>Each sequence lists its involved systems as participants across the top row.</td></tr>
     <tr><td>Identify activities and control flow</td><td>Time runs downward; each activity appears in order under the responsible participant or as a message to the next participant.</td></tr>
     <tr><td>Define messages</td><td>Every cross-lane arrow carries a message signature such as <code>dispatch(invocation, persona_slug)</code>, <code>complete(prompt, memory_context, tool_manifest)</code>, or <code>approve_tool(proposal_id)</code>.</td></tr>
     <tr><td>Define rules</td><td>Sequence notes name the runtime rules that influence actions: identity-and-persona resolution, admin gate, core-only recording, <code>dream.lock</code>, transactions, and the registry protocol.</td></tr>
-    <tr><td>Verify the view</td><td>No actor writes stores directly; application code reaches stores through data-access APIs; external services are reached through service adapters; only gateway and scheduler have daemon health state.</td></tr>
+    <tr><td>Verify the view</td><td>No actor writes stores directly; application code reaches stores through data-access APIs; external services are reached through service adapters; gateway edge and worker loops communicate only through the durable Channel queue; only gateway and scheduler have daemon health state.</td></tr>
   </tbody>
 </table>
 
 <h4>Process supervision</h4>
 
-<p>Supervision in v0.1 is intentionally minimal. Only the gateway and scheduler are daemons, so only they carry daemon health state and optional heartbeat timestamps. <code>typhoon health</code> is a read-only one-shot that reports whether those daemon states are fresh, along with DB latency and recent recorder/dream status. It does not restart processes and it does not create health records for ordinary CLI invocations. Restart policy is the operator's responsibility through the host supervisor (systemd, Docker, runit, etc.). Dream needs no daemon supervision because it is transient; cron decides when it runs and the file lock decides whether it can start. One-shot processes need no supervision because they are bounded and observable through their exit codes.</p>
+<p>Supervision in v0.1 is intentionally minimal. Only the channel gateway and scheduler are daemons, so only they carry daemon health state and optional heartbeat timestamps. <code>typhoon health</code> is a read-only one-shot that reports whether those daemon states are fresh, along with queue backlog/oldest age, DB latency, and recent recorder/dream status. It does not restart processes and it does not create health records for ordinary CLI invocations. Restart policy is the operator's responsibility through the host supervisor (systemd, Docker, runit, etc.). Dream needs no daemon supervision because it is transient; cron decides when it runs and the file lock decides whether it can start. One-shot processes need no supervision because they are bounded and observable through their exit codes.</p>
 
 <h3 id="sec-2-4">2.4 Subsystem view</h3>
 
@@ -704,10 +711,10 @@ sequenceDiagram
   </thead>
   <tbody>
     <tr><td><b>S1 — Platform</b></td><td>Bootstrap, Health inspector (channel-binding management commands)</td><td>Bring a Typhoon instance into being on top of an existing persona-core schema (mark deploying user as <code>admin</code>), manage channel bindings, and expose daemon observability.</td></tr>
-    <tr><td><b>S2 — Channels &amp; dispatch</b> (use plane)</td><td>Channel gateway, External-agent endpoints, Scheduler, Core, Signal recorder</td><td>Receive every "use" invocation through an adapter, dispatch the work, record one signal per invocation.</td></tr>
+    <tr><td><b>S2 — Channels &amp; dispatch</b> (use plane)</td><td>Channel gateway, Scheduler, Core, Signal recorder</td><td>Decouple external channel I/O through a durable queue, receive every "use" invocation (including the use-plane CLI subcommands <code>typhoon signal record</code> / <code>typhoon memory query</code> that invoke Core directly), dispatch the work, record one signal per invocation.</td></tr>
     <tr><td><b>S3 — Self-growth</b></td><td>Dream cycle</td><td>Mine accumulated signals into memories and proposals on a scheduled batch.</td></tr>
     <tr><td><b>S4 — Registry management</b></td><td>Tool manager (with path lint), Persona manager</td><td>Move proposals through ratification into atomic tool-registry / persona-attribute mutations.</td></tr>
-    <tr><td><b>S5 — Data access &amp; adapters</b></td><td>Tool registry, Memory store, Signal store, Proposal queue, Config, Identity &amp; persona resolution, Persona attributes<br/>Storage adapters, Channel service adapters, LLM service adapters</td><td>Own Typhoon's data-access mechanics (including the read-side of persona-core's <code>user</code> / <code>persona</code> tables) and typed adapters for storage drivers and non-storage services.</td></tr>
+    <tr><td><b>S5 — Data access &amp; adapters</b></td><td>Tool registry, Memory store, Signal store, Channel queue, Proposal queue, Config, Identity &amp; persona resolution, Persona attributes<br/>Storage adapters, Channel service adapters, LLM service adapters</td><td>Own Typhoon's data-access mechanics (including the channel queue and the read-side of persona-core's <code>user</code> / <code>persona</code> tables) and typed adapters for storage drivers and non-storage services.</td></tr>
   </tbody>
 </table>
 
@@ -726,19 +733,18 @@ sequenceDiagram
     <tr><td>Telegram service</td><td>Outside Typhoon</td><td>External channel service</td><td>Reached only through the Telegram adapter</td></tr>
     <tr><td>LLM service</td><td>Outside Typhoon</td><td>External service endpoint</td><td>Reached only through S5 service adapters</td></tr>
     <tr><td>Telegram adapter</td><td>S5 — Data access &amp; adapters</td><td>Channel service-adapter instance</td><td>Implements the channel-adapter interface for Telegram; switchable with future channel adapters</td></tr>
-    <tr><td>Channel gateway</td><td>S2 — Channels &amp; dispatch</td><td>Channel ingress component group</td><td>Owns one daemon workflow across configured channels: polling, identity, onboarding, invocation shaping, and core dispatch</td></tr>
-    <tr><td>External-agent endpoint</td><td>S2 — Channels &amp; dispatch</td><td>CLI ingress component group</td><td>Validates endpoint input, resolves/defaults identity, invokes core</td></tr>
+    <tr><td>Channel gateway</td><td>S2 — Channels &amp; dispatch</td><td>Channel edge and worker component groups</td><td>One daemon. Edge loop owns external channel I/O through adapters and durable queue ingress/egress; worker loop claims queued inbound messages, resolves identity, dead-letters unresolved messages, runs core dispatch for resolved messages, and writes queued outbound replies.</td></tr>
     <tr><td>Scheduler</td><td>S2 — Channels &amp; dispatch</td><td>Schedule dispatch component group</td><td>Use-plane targets go through core; management-plane targets are spawned directly</td></tr>
     <tr><td>Core dispatcher</td><td>S2 — Channels &amp; dispatch</td><td>Use-plane orchestration component group</td><td>Owns use invocation flow and is the only caller that drives the recorder</td></tr>
     <tr><td>Signal recorder</td><td>S2 — Channels &amp; dispatch</td><td>Recording component group</td><td>Sole writer to signal store, driven only by core</td></tr>
-    <tr><td>Forged tool subprocess</td><td>Runtime artifact, not a subsystem</td><td>Installed executable selected from registry</td><td>S2 executes it during use-plane dispatch; S4/S5 own lifecycle and registry facts</td></tr>
+    <tr><td>Tool subprocess</td><td>Runtime artifact, not a subsystem</td><td>Installed executable selected from registry</td><td>In channel turns, the LLM selects tool calls and S2 mediates execution. In scheduled use targets, S2 may execute the configured tool/subcommand directly. S4/S5 own lifecycle and registry facts.</td></tr>
     <tr><td>Dream batch</td><td>S3 — Self-growth</td><td>Dream pipeline component group</td><td>Owns signal analysis, memory/proposal emission, and the single-batch rule</td></tr>
     <tr><td>Tool manager</td><td>S4 — Registry management</td><td>Tool proposal and lifecycle component group</td><td>Admin-gated; orchestrates forge intake, ratification, and installed-tool mutation</td></tr>
     <tr><td>Persona manager</td><td>S4 — Registry management</td><td>Persona proposal lifecycle component group</td><td>Owning user or admin; ratifies dream-driven persona-attribute changes; writes persona-core's <code>persona</code> row</td></tr>
-    <tr><td>Health inspector</td><td>S1 — Platform</td><td>Observability component group</td><td>Read-only; observes gateway and scheduler daemon state</td></tr>
-    <tr><td>Identity &amp; persona resolution, Persona attributes, Proposal queue, Tool registry, Memory store, Signal store, Config</td><td>S5 — Data access &amp; adapters</td><td>Data-access component group</td><td>Typed state APIs; enforce per-persona scoping, role lookup, transactions, retrieval bounds, and lineage. Identity &amp; persona resolution and Persona attributes read-and-sometimes-write persona-core's tables; Tool registry / Memory store / Signal store / Proposal queue / Config own Typhoon's own tables.</td></tr>
+    <tr><td>Health inspector</td><td>S1 — Platform</td><td>Observability component group</td><td>Read-only; observes gateway and scheduler daemon state plus channel queue backlog</td></tr>
+    <tr><td>Identity &amp; persona resolution, Persona attributes, Channel queue, Proposal queue, Tool registry, Memory store, Signal store, Config</td><td>S5 — Data access &amp; adapters</td><td>Data-access component group</td><td>Typed state APIs; enforce per-persona scoping, role lookup, durable channel queue leases/dedupe, transactions, retrieval bounds, and lineage. Identity &amp; persona resolution and Persona attributes read-and-sometimes-write persona-core's tables; Tool registry / Memory store / Signal store / Channel queue / Proposal queue / Config own Typhoon's own tables.</td></tr>
     <tr><td>Data-access APIs</td><td>S5 — Data access &amp; adapters</td><td>Umbrella participant for data-access libraries</td><td>Only path from application subsystems to Typhoon stores</td></tr>
-    <tr><td>Channel adapter, LLM adapter</td><td>S5 — Data access &amp; adapters</td><td>Service-adapter component group</td><td>Protocol-only clients; no daemon workflow, identity resolution, onboarding, core dispatch, or Typhoon lifecycle decisions</td></tr>
+    <tr><td>Channel adapter, LLM adapter</td><td>S5 — Data access &amp; adapters</td><td>Service-adapter component group</td><td>Protocol-only clients; no daemon workflow, identity resolution, binding-missing policy, core dispatch, or Typhoon lifecycle decisions</td></tr>
     <tr><td>Filesystem, filesystem lock</td><td>Not a subsystem; accessed through S5</td><td>Host artifact store and lock target</td><td>S5 provides filesystem and lock mechanics; owning subsystem decides why a lock is taken</td></tr>
   </tbody>
 </table>
@@ -751,7 +757,7 @@ sequenceDiagram
   </thead>
   <tbody>
     <tr><td>S1 — Platform</td><td>Bootstrap and migration; identity administration; health and daemon observability</td></tr>
-    <tr><td>S2 — Channels &amp; dispatch</td><td>Channel ingress; external-agent ingress; scheduler; core dispatcher; signal recorder</td></tr>
+    <tr><td>S2 — Channels &amp; dispatch</td><td>Channel gateway edge loop; channel gateway worker loop; scheduler; core dispatcher; signal recorder. The use-plane CLI subcommands invoke core directly through normal CLI dispatch and have no component group of their own.</td></tr>
     <tr><td>S3 — Self-growth</td><td>Dream orchestration; light / REM / deep analysis phases; memory and proposal emission; dream lock usage</td></tr>
     <tr><td>S4 — Registry management</td><td>Tool proposal intake and forge delivery; tool lifecycle; persona proposal lifecycle; role gates and path lint</td></tr>
     <tr><td>S5 — Data access &amp; adapters</td><td>Data-access APIs; storage adapters; service adapters; transaction and lock primitives</td></tr>
@@ -759,10 +765,10 @@ sequenceDiagram
 </table>
 
 <h4>S1 — Platform</h4>
-<p>The platform subsystem covers everything required to stand a Typhoon instance up on top of an existing persona-core schema, resolve channel identities, and keep daemons observable. Bootstrap is one-shot — connect to the admin-provided TursoDB URL/token (shared with persona-core), apply Typhoon's schema migrations on top of persona-core's, mark the deploying user as <code>admin</code> in persona-core's <code>user</code> table, and seed Typhoon's system-scoped config; re-runs are idempotent. The platform also owns the admin-facing channel-binding management commands (list bindings, revoke a binding, mint an onboarding invite), which read and write through S5's Identity &amp; persona resolution library. <code>typhoon health</code> is a read-only one-shot that reports gateway and scheduler liveness/heartbeat state, DB latency, and recent recorder/dream status. The DLD chapter for S1 covers the migration scheme (versioned, additive-only, sharing the schema-version pattern with persona-core), the seed inventory (including the admin role assertion), the binding management command grammar, the binding-verification mechanics (claim tokens, expiry, nonce), the daemon heartbeat rows, and the health output format.</p>
+<p>The platform subsystem covers everything required to stand a Typhoon instance up on top of an existing persona-core schema, resolve channel identities, and keep daemons observable. Bootstrap is one-shot — connect to the admin-provided TursoDB URL/token (shared with persona-core), apply Typhoon's schema migrations on top of persona-core's, mark the deploying user as <code>admin</code> in persona-core's <code>user</code> table, and seed Typhoon's system-scoped config; re-runs are idempotent. The platform also owns the admin-facing channel-binding management commands (list bindings, create or revoke verified bindings), which read and write through S5's Identity &amp; persona resolution library. <code>typhoon health</code> is a read-only one-shot that reports gateway and scheduler liveness/heartbeat state, queue backlog/oldest age, DB latency, and recent recorder/dream status. The DLD chapter for S1 covers the migration scheme (versioned, additive-only, sharing the schema-version pattern with persona-core), the seed inventory (including the admin role assertion), the binding management command grammar, the binding-verification mechanics, the daemon heartbeat rows, queue health fields, and the health output format.</p>
 
 <h4>S2 — Channels &amp; dispatch (use plane)</h4>
-<p>S2 is the entire use plane in one subsystem. It owns every path that brings external work into Typhoon (channel gateway turns, external-agent one-shots, cron-fired use entries), the core dispatcher that orchestrates that work, and the signal recorder that persists one signal per invocation. Two defining invariants are enforced here: "core is the only thing that drives the recorder," and "every invocation reaching core carries a resolved <code>persona_slug</code>." The channel gateway resolves the channel peer to <code>(user_id, persona_slug)</code> via S5's Identity &amp; persona resolution before invoking core (peer-to-user via verified binding, bot-account-to-persona via per-bot configuration in v0.1); the external-agent endpoints default to the admin's primary persona. The DLD chapter for S2 covers the gateway workflow, the binding-resolution and onboarding flow for unbound peers, the per-bot persona configuration, the agent loop's tool-dispatch sequence, the cron entry format and tick semantics, the external-agent endpoint contracts (input shape, exit codes, persona defaulting), the core's dispatch interface, and the recorder's write protocol (signal row tagged with <code>persona_slug</code>).</p>
+<p>S2 is the entire use plane plus the channel gateway in one subsystem. It owns every path that brings external work into Typhoon (queued channel turns, the use-plane CLI subcommands <code>typhoon signal record</code> / <code>typhoon memory query</code>, cron-fired use entries), the core dispatcher that orchestrates that work, and the signal recorder that persists one signal per invocation. Two defining invariants are enforced here: "core is the only thing that drives the recorder," and "every invocation reaching core carries a resolved <code>persona_slug</code>." The gateway edge loop only moves normalized messages between channel adapters and S5's Channel queue. The gateway worker loop claims inbound queue rows, resolves the channel peer to <code>(user_id, persona_slug)</code> via S5's Identity &amp; persona resolution before invoking core (peer-to-user via verified binding, bot-account-to-persona via per-bot configuration in v0.1), marks unresolved rows <code>dead_letter</code> with <code>binding_missing</code>, and writes replies to the outbox only for resolved turns. In channel turns, the LLM chooses tool calls from the manifest that core provides; core mediates execution and recording but does not choose the tool. Scheduled use entries are the exception: a cron entry may target a specific tool or subcommand directly. The use-plane CLI subcommands invoke core directly with no daemon in front, defaulting to the admin's primary persona unless an explicit <code>--persona</code> is given. The DLD chapter for S2 covers the gateway edge-loop workflow, queue claim/ack/dead-letter rules, binding-resolution failure behavior, per-bot persona configuration, the agent loop's LLM-selected tool-call sequence, cron entry format and tick semantics, the use-plane CLI subcommand contracts (input shape, exit codes, persona defaulting), core's dispatch interface, and the recorder's write protocol (signal row tagged with <code>persona_slug</code>).</p>
 
 <h4>S3 — Self-growth</h4>
 <p>S3 is just the dream batch, but it is large and stands alone because of its scoring logic and its three-phase pipeline. Light, REM, and deep phases run sequentially; each emits structured outputs the next consumes. Dream reads from S5 (signal store, memory store, tool registry, existing proposals) and writes back through S5 (memory store, proposal queue) — it never calls into S2 or S4 directly. The single-writer policy belongs to S3; S5 provides the filesystem lock primitive. The DLD chapter for S3 covers each phase's input/output contracts, the scoring formulas and weights, the LLM prompts for the deep phase, the persona-proposal generation rules, the stale-signal prune policy, and the cron-entry seeding.</p>
@@ -771,7 +777,7 @@ sequenceDiagram
 <p>S4 owns the admin-driven (and persona-owner-driven) advancement of proposals. Tool manager covers the unified <code>typhoon tool</code> namespace (proposal flow with required forge delivery fields and path lint, plus full lifecycle operations on installed tools); every mutation gates on <code>user.role='admin'</code>. Proposal submit attaches forge output to <code>cli_proposals</code>; approval is the first operation that mutates the installed-tool registry. Persona manager is the per-persona flow for persona-attribute proposals — the persona's owning user may approve proposals targeting their own personas; an admin may approve any — with atomic per-persona attribute mutation on approval. Both managers query S5's Identity &amp; persona resolution for the role check, then compose against the proposal queue and the corresponding storage library (tool registry for one, persona attributes for the other), and tool manager relies on the registry mutation protocol from §2.3 wherever a filesystem write is involved. The DLD chapter for S4 covers the proposal state-machine transitions, path-lint implementation, the role-check policy at every subcommand, the admin-CLI command grammar and exit codes, the atomic-mutation transaction shapes, the lineage-and-history rules, the 3-strike rejection tracking (per pattern for cli proposals; per <code>(persona_slug, attribute_column)</code> for persona proposals), and the promote-script (hand-written tool adoption) flow.</p>
 
 <h4>S5 — Data access &amp; adapters</h4>
-<p>S5 is the lower implementation subsystem that contains Typhoon's data-access libraries and typed adapters. Data-access libraries (tool registry, memory store, signal store, proposal queue, config, identity &amp; persona resolution, persona attributes) own persistence mechanics and typed state APIs — atomicity, retrieval bounds, success fields, type validation, lineage persistence, verified-binding rows, the shared-vs-per-persona data scoping, and admin role lookup. Identity &amp; persona resolution and Persona attributes read (and Persona attributes also write) persona-core's <code>user</code> / <code>persona</code> tables; everything else owns Typhoon's own tables. Storage adapters own driver mechanics for the data-store layer. Service adapters own the protocols for non-storage services such as channel APIs and LLM APIs. The important boundary is that application code uses typed APIs and adapters; it does not embed SQL, filesystem driver details, channel wire formats, or LLM provider request formats. The DLD chapter for S5 covers the SQL schema (Typhoon's own DDL on top of persona-core's, including channel-binding tables, signal/memory/proposal tables, and the per-persona scoping rules), each library's API surface (which APIs take <code>persona_slug</code> and which do not), the registry mutation protocol, transaction primitives, lock primitives, every adapter's external interface, and the exact static dependency view that enforces the boundary in code.</p>
+<p>S5 is the lower implementation subsystem that contains Typhoon's data-access libraries and typed adapters. Data-access libraries (tool registry, memory store, signal store, channel queue, proposal queue, config, identity &amp; persona resolution, persona attributes) own persistence mechanics and typed state APIs — atomicity, retrieval bounds, success fields, type validation, lineage persistence, verified-binding rows, durable queue leases/dedupe, the shared-vs-per-persona data scoping, and admin role lookup. Identity &amp; persona resolution and Persona attributes read (and Persona attributes also write) persona-core's <code>user</code> / <code>persona</code> tables; everything else owns Typhoon's own tables. Storage adapters own driver mechanics for the data-store layer. Service adapters own the protocols for non-storage services such as channel APIs and LLM APIs. The important boundary is that application code uses typed APIs and adapters; it does not embed SQL, filesystem driver details, channel wire formats, or LLM provider request formats. The DLD chapter for S5 covers the SQL schema (Typhoon's own DDL on top of persona-core's, including channel-binding tables, channel inbox/outbox tables, signal/memory/proposal tables, and the per-persona scoping rules), each library's API surface (which APIs take <code>persona_slug</code> and which do not), channel queue lease/retry/dead-letter semantics, the registry mutation protocol, transaction primitives, lock primitives, every adapter's external interface, and the exact static dependency view that enforces the boundary in code.</p>
 <p>Because S5 is intentionally broad, the DLD may split its chapter by component group: data-access APIs, storage adapters, service adapters, and transaction/lock primitives.</p>
 
 <h4>Subsystem dependencies</h4>
@@ -781,7 +787,7 @@ sequenceDiagram
 <div class="mermaid">
 flowchart TB
     S1[S1 — Platform<br/>Bootstrap, Health]
-    S2[S2 — Channels &amp; Dispatch<br/>Gateway, Endpoints, Scheduler,<br/>Core, Recorder]
+    S2[S2 — Channels &amp; Dispatch<br/>Gateway, Endpoints,<br/>Scheduler, Core, Recorder]
     S3[S3 — Self-growth<br/>Dream cycle]
     S4[S4 — Registry management<br/>Tool manager, Persona manager]
     S5[S5 — Data access &amp; adapters<br/>typed APIs + service adapters]
@@ -799,7 +805,7 @@ flowchart TB
 <p>Four properties make this set of subsystems suitable as DLD chapter boundaries.</p>
 
 <ol>
-  <li><strong>Each subsystem has a single headline responsibility</strong> that can be understood without referring to the others. Anyone reviewing the S3 chapter can do so without knowing the gateway protocol; anyone reviewing S2 can do so without knowing dream's scoring weights.</li>
+  <li><strong>Each subsystem has a single headline responsibility</strong> that can be understood without referring to the others. Anyone reviewing the S3 chapter can do so without knowing the channel adapter protocol; anyone reviewing S2 can do so without knowing dream's scoring weights.</li>
   <li><strong>Cross-subsystem coupling is bounded and explicit.</strong> S2 / S3 / S4 / S1 all depend on S5; S1 additionally observes S2's daemons; otherwise nothing crosses. This makes each chapter a small surface-area read.</li>
   <li><strong>The runtime planes from §2.3 fall along these boundaries.</strong> S2 is the use plane in its entirety; S3, S4, and the operator-facing slice of S1 are management plane. The split this HLD treats as load-bearing remains visible at the DLD level rather than being smeared across chapters.</li>
   <li><strong>Process-view participants have clear owners without becoming new subsystems.</strong> Sequence participants from §2.3 map either to a top-level subsystem-owned component group, to S5's access/adapters boundary, or to an external actor/service. This keeps the subsystem count manageable while still giving DLD authors a concrete hierarchy.</li>
@@ -817,17 +823,19 @@ flowchart TB
     ├── typhoon/                      # binary entrypoint: one thin handler per subcommand
     │   └── src/
     │       ├── main.rs               # clap dispatch
-    │       └── cli/                  # gateway.rs, cron.rs, dream.rs,
+    │       └── cli/                  # gateway.rs,
+    │                                 # cron.rs, dream.rs,
     │                                 # tool.rs, persona.rs, health.rs,
     │                                 # signal.rs, memory.rs, init.rs,
     │                                 # sql.rs, config.rs
     ├── typhoon-platform/             # S1 — Bootstrap, Health
-    ├── typhoon-dispatch/             # S2 — Gateway, External-agent endpoints,
-    │                                 #      Scheduler, Core, Recorder
+    ├── typhoon-dispatch/             # S2 — Channel gateway,
+    │                                 #      Scheduler, Core, Recorder, use-plane CLI subcommands
     ├── typhoon-dream/                # S3 — Dream batch (light / REM / deep)
     ├── typhoon-registry-mgmt/        # S4 — Tool manager + Persona manager
     ├── typhoon-data/                 # S5 data access — Tool registry, Memory store,
-    │                                 #         Signal store, Proposal queue, Config,
+    │                                 #         Signal store, Channel queue,
+    │                                 #         Proposal queue, Config,
     │                                 #         Identity &amp; persona resolution, Persona attributes
     ├── typhoon-adapters/             # S5 adapters — storage drivers, service clients,
     │                                 #         LLM clients, Telegram
@@ -861,7 +869,7 @@ flowchart TB
     <tr><td><b>Error types</b> (one root error enum per subsystem; conversions to/from)</td><td><code>typhoon-foundation</code> defines the trait + common variants; subsystem crates define their own thin enum that <code>From</code>-converts</td><td>No <code>anyhow</code> in library crates; only the binary may use <code>anyhow</code>. Subsystem errors carry context, not just text.</td></tr>
     <tr><td><b>Clock / time</b> (now, sleep, deadline)</td><td><code>typhoon-foundation::clock</code> — trait + production impl + test impl in <code>typhoon-testkit</code></td><td>No direct calls to <code>std::time::SystemTime::now</code> or <code>tokio::time::sleep</code> outside foundation. Everything injectable.</td></tr>
     <tr><td><b>ID generation</b> (proposal IDs, run IDs, signal IDs, idempotency keys)</td><td><code>typhoon-foundation::ids</code></td><td>One generator type per ID kind (newtype). No raw <code>Uuid</code> at API surfaces. <code>persona_slug</code> and persona-core's <code>user_id</code> are newtypes to prevent string / integer mix-ups across module boundaries.</td></tr>
-    <tr><td><b>Identity types</b> (<code>persona_slug</code>, <code>user_id</code>, <code>Role</code> enum, binding tuple)</td><td><code>typhoon-foundation</code> defines the types; <code>typhoon-data</code> defines the identity-and-persona-resolution library; <code>typhoon-dispatch</code> resolves <code>(channel, bot_account_id, peer_id) → (user_id, persona_slug)</code> at gateway / endpoint entry; <code>typhoon-registry-mgmt</code> checks <code>admin</code> role at every mutation</td><td>Authorization is checked at boundaries (gateway, endpoint, management subcommand), not deep inside libraries; libraries trust the <code>persona_slug</code> they receive.</td></tr>
+    <tr><td><b>Identity types</b> (<code>persona_slug</code>, <code>user_id</code>, <code>Role</code> enum, binding tuple)</td><td><code>typhoon-foundation</code> defines the types; <code>typhoon-data</code> defines the identity-and-persona-resolution library; <code>typhoon-dispatch</code> resolves <code>(channel, bot_account_id, peer_id) → (user_id, persona_slug)</code> at gateway worker-loop / endpoint entry; <code>typhoon-registry-mgmt</code> checks <code>admin</code> role at every mutation</td><td>Authorization is checked at boundaries (gateway worker loop, endpoint, management subcommand), not deep inside libraries; libraries trust the <code>persona_slug</code> they receive.</td></tr>
     <tr><td><b>Logging</b> (structured, level-controlled)</td><td><code>typhoon-foundation</code> re-exports a logging facade (e.g., <code>tracing</code>); only the binary configures the subscriber</td><td>Library crates emit only; never configure. Log fields use a small fixed vocabulary (subsystem, run_id, signal_id, …).</td></tr>
     <tr><td><b>Tracing / spans</b> (request IDs, dispatch chains)</td><td>Same — <code>tracing</code> spans, started at interface entry and at core dispatch</td><td>Every signal carries the originating span ID for post-hoc correlation.</td></tr>
     <tr><td><b>Telemetry / metrics</b> (counters, gauges, histograms)</td><td><code>typhoon-foundation::metrics</code> — façade only</td><td>Library crates increment counters via the façade; the binary chooses an exporter (or none, in v0.1).</td></tr>

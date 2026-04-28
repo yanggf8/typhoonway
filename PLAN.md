@@ -14,7 +14,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - TursoDB (operator-provided account) as the sole state store
 - Schema migrations + seed, both run at `typhoon init --url $URL --token $TOK`
 - Config CRUD with type validation, read-only `typhoon sql`
-- External-agent endpoints (`typhoon signal record`, `typhoon memory query`) — agent-invoked sidecar one-shots; the same path covers development shakedown via shell scripts
+- Use-plane CLI subcommands (`typhoon signal record`, `typhoon memory query`) — agent-invoked one-shots that invoke Core directly through normal CLI dispatch; the same path covers development shakedown via shell scripts
 - Signal capture: tool calls, corrections, outcomes, session boundaries, success tagging
 - Dream cycle (light / REM / deep) — organizes signals and writes **proposal briefs**, not requirements and not code
 - Memory extraction (mem0-style) inside the dream cycle; bounded retrieval (Top-K + similarity)
@@ -26,7 +26,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - 3-strike rejection tracking for both patterns and replacements
 - Persona proposals for persona-attribute changes (always require approval)
 - Cron scheduler (`typhoon cron`) with `--catchup`
-- Channel gateway (`typhoon gateway`) with Telegram adapter — primary user interface in v0.1
+- Queued channel path (`typhoon gateway`) with Telegram adapter — primary user interface in v0.1; one daemon hosts an edge loop and a queue-consuming worker loop, while durable Turso-backed inbox/outbox rows decouple external channel I/O from Typhoon Way's agent loop
 - Observability keepers: `typhoon health`, `typhoon dream stats`, per-CLI health metrics
 
 ### 1.2 Out of scope (v0.1)
@@ -58,7 +58,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W2 | TursoDB client, migrations, seed (needs URL + token at init) | W1 | `typhoon init` creates schema + seed rows | M |
 | W3 | `config get / set / list`, type validation (`string/int/float/bool/cron`) | W2 | Config CRUD with CHECK enforcement | S |
 | W4 | `typhoon sql` — SELECT-only guard | W2 | SELECT works; writes rejected | S |
-| W5 | External-agent endpoints (`typhoon signal record`, `typhoon memory query`), recorder path, session model, tool-call signal capture | W2 | Hand-run shell script routes through runtime/recorder and produces `dream_signals` rows | M |
+| W5 | Use-plane CLI subcommands (`typhoon signal record`, `typhoon memory query`) wired into Core, recorder path, session model, tool-call signal capture | W2 | Hand-run shell script routes through runtime/recorder and produces `dream_signals` rows | M |
 | W6 | Success tagging (exit 0 + no next-turn correction) | W5 | Signals carry `success` flag correctly | S |
 | W7 | Stale-signal prune (7d) + dream run file lock | W5 | Re-running dream is safe; old signals cleaned | S |
 | W8 | Dream LLM client (cheap batch model), `dream_runs` logging | W5 | Dream can make LLM calls; runs logged | M |
@@ -74,7 +74,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W18 | Replacement flow + `.history/` archival + atomic swap | W16 | Replacement approval swaps cleanly | M |
 | W19 | 3-strike rejection tracking (patterns + replacements) | W12, W18 | Dream stops re-proposing rejected patterns | S |
 | W20 | Cron scheduler (`typhoon cron`) + `--catchup` | W12 | Nightly dream fires; catchup handles >25h gap | S |
-| W21 | Telegram channel (`typhoon gateway --telegram`) | W10, W6 | Real user interaction lands in signals | L |
+| W21 | Telegram channel (`typhoon gateway`) | W10, W6 | Real user interaction flows Telegram → gateway edge loop → channel inbox → gateway worker loop → core → channel outbox → Telegram, and lands in signals | L |
 | W22 | Keepers — `typhoon health`, `typhoon dream stats`, CLI health metrics in `typhoon tool show` | W20 | Observability wired | M |
 | W23 | Test harness for all TC-* cases — runnable from one command | W17, W21 | `make test` runs the whole suite | M |
 
@@ -216,12 +216,13 @@ Each test case is a command (or short script) with an observable pass criterion.
 
 | ID | What runs | Pass criterion |
 |---|---|---|
-| TC-M7-01 | `typhoon gateway --telegram` with valid bot token | Connects; bot is reachable in Telegram |
-| TC-M7-02 | Send message to bot | Signal appears in `dream_signals` with Telegram-sourced `session_id` |
-| TC-M7-03 | Message triggers a forged CLI via memory retrieval | Bot reply contains the CLI's output; `use_count` increments |
-| TC-M7-04 | `typhoon health` | Output includes DB latency, last successful write timestamp, recorder health, and last dream run status |
-| TC-M7-05 | `typhoon dream stats` after several runs | Output includes: clusters detected, graduated to proposal, approved, rejected, expired-unforged |
-| TC-M7-06 | `typhoon tool show <name>` for active CLI | Output includes `use_count`, `success_count`, `last_used`, recent errors |
+| TC-M7-01 | `typhoon gateway` with valid bot token | Connects; bot is reachable in Telegram; inbound Telegram update creates a `channel_inbox` row |
+| TC-M7-02 | `typhoon gateway` running, send message to bot | Gateway worker loop claims inbox row; signal appears in `dream_signals` with Telegram-sourced `session_id`; reply lands in `channel_outbox` |
+| TC-M7-03 | Send message from a peer with no verified binding | Gateway worker loop marks inbound row `dead_letter` with reason `binding_missing`; no `dream_signals` row and no `channel_outbox` row are created |
+| TC-M7-04 | Message triggers a forged CLI via memory retrieval | Bot reply contains the CLI's output after the gateway edge loop delivers the outbox row; `use_count` increments |
+| TC-M7-05 | `typhoon health` | Output includes DB latency, channel queue backlog/oldest age, gateway/cron liveness, last successful write timestamp, recorder health, and last dream run status |
+| TC-M7-06 | `typhoon dream stats` after several runs | Output includes: clusters detected, graduated to proposal, approved, rejected, expired-unforged |
+| TC-M7-07 | `typhoon tool show <name>` for active CLI | Output includes `use_count`, `success_count`, `last_used`, recent errors |
 
 ### 5.8 Cross-cutting invariants
 
@@ -248,7 +249,7 @@ Each risk has a trigger (how we notice early), a built-in mitigation (designed i
 | **R1. Dream produces noisy proposal briefs** | Rejection rate > 50% over 4 weeks | `dream.min_frequency=5`, `dream.min_score=0.7`; REM clusters only successful chains; forge hardens requirements before implementation | `typhoon dream stats` funnel (clusters → proposals → approved) | Tune thresholds up; improve brief template; suspend dream with `dream.enabled=false` |
 | **R2. Signals aren't a behavioral contract (accepted limitation)** | — | Admitted in §3 of PROPOSAL.md; forge owns correctness, not Typhoon | Per-CLI `success_count/use_count` ratio in `typhoon tool show` | `typhoon tool rollback` is always available; dream auto-proposes replacement on rising error rate |
 | **R3. Hardcoded-path lint over-rejects useful source** | Path-lint rejection rate > 20% of submissions or repeated operator complaints | False positives are accepted in v0.1; forge revises source and resubmits | `typhoon dream stats` / proposal stats show lint rejection counts and reasons | Tune regex after examples accumulate; allow explicit operator override in a later version |
-| **R4. Telegram signal volume too sparse** | 7-day rolling average < 20 signals/day | External-agent channel runs in parallel; Telegram is primary but not only — operator-driven activity through external agent CLIs also produces signals | `typhoon dream stats` shows 7-day signal volume per channel | Lower `dream.min_frequency`; add lightweight `/useful` Telegram command for explicit positive tagging |
+| **R4. Telegram signal volume too sparse** | 7-day rolling average < 20 signals/day | External-agent channel runs in parallel; Telegram is primary but not only — operator-driven activity through external agent CLIs also produces signals | `typhoon dream stats` shows 7-day signal volume per channel; `typhoon health` shows channel queue backlog so sparse signals are not confused with stuck delivery | Lower `dream.min_frequency`; add lightweight `/useful` Telegram command for explicit positive tagging |
 | **R5. Operator forge burden heavier than forecast** | Expired-unforged ratio > 50% over 2 weeks | Thresholds tunable to throttle proposal rate | `typhoon dream stats` shows forge queue depth + expired rate | Raise thresholds; bring forward v0.2 forge automation |
 | **R6. TursoDB concurrency / availability** | Transaction errors in logs; dream hangs | Single-writer task inside Typhoon; `BEGIN IMMEDIATE` for all approval transactions; file lock for dream run mutex | `typhoon health` pings DB, reports latency + last-successful-write | Retry with exponential backoff; trust Turso SLA; if sustained, consider local libSQL fallback (v0.2 decision) |
 | **R7. Forge's correctness claim mismatches reality** | Forged CLI passes forge's tests but behaves wrong in real use | Tier review intensity is operator-calibrated; mutate tier requires line-by-line review; forge submits a hardened requirement + test plan for review | Post-install `use_count` / `success_count` ratio per CLI | `typhoon tool rollback`; dream proposes replacement; tighten future forge requirements and test plans |
@@ -267,7 +268,7 @@ These apply throughout the project. Each phase must not violate them. See `CLAUD
 5. **Skills are not a concept.** No `skills`, `skill_triggers`, or `skill_proposals` tables. No `typhoon skill *` commands. CLIs are the only artifact.
 6. **Typhoon does not write code.** Forge writes code; Typhoon writes proposal briefs and catalogs deliveries.
 7. **Typhoon does not verify correctness.** Hardcoded-path lint and metadata capture are the only submit-time checks Typhoon performs. Correctness is the forge's responsibility, accepted or rejected by the operator.
-8. **One runtime instance = one TursoDB database (shared with persona-core), serving multiple users with multiple personas.** Typhoon shares a TursoDB cloud database with persona-core. persona-core owns the `user` / `persona` / `audit_log` schema (migrations 001–006, schema-version row `('persona-core', N)`); Typhoon adds its own migrations on top (signal store, memory store, tool registry, proposal queues, daemon state; schema-version row `('typhoon', M)`). One Typhoon runtime instance owns one DB; the same DB can help admins work across machines for forge/review, but a second Typhoon runtime writer is not supported. The DB serves multiple users (auth-bearing humans, OAuth via persona-core — one admin seeded at init, plus authors who join via channel binding) and multiple personas (writer/agent identities owned by users; one user → many personas). Per-persona data (signals, memory, persona-attribute proposals) is scoped by `persona_slug`; tools are shared across all personas; the `role='admin'` user gate enforces ratification and tool-registry mutation; v0.1 maps one Telegram bot account to one persona.
+8. **One runtime instance = one TursoDB database (shared with persona-core), serving multiple users with multiple personas.** Typhoon shares a TursoDB cloud database with persona-core. persona-core owns the `user` / `persona` / `audit_log` schema (migrations 001–006, schema-version row `('persona-core', N)`); Typhoon adds its own migrations on top (channel inbox/outbox queue, signal store, memory store, tool registry, proposal queues, daemon state; schema-version row `('typhoon', M)`). One Typhoon runtime instance owns one DB; the same DB can help admins work across machines for forge/review, but a second Typhoon runtime writer is not supported. The DB serves multiple users (auth-bearing humans, OAuth via persona-core — one admin seeded at init, plus authors who join via channel binding) and multiple personas (writer/agent identities owned by users; one user → many personas). Per-persona data (signals, memory, persona-attribute proposals) is scoped by `persona_slug`; tools are shared across all personas; the `role='admin'` user gate enforces ratification and tool-registry mutation; v0.1 maps one Telegram bot account to one persona. External channel I/O is decoupled from Typhoon Way's agent loop through durable queue rows, not an in-memory channel.
 
 ---
 

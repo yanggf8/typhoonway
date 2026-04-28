@@ -40,7 +40,7 @@ No skill registry. No system-prompt catalog. No agent-side install.
 
 **Forge is manual in v0.1.** "Forge" means the operator-driven coding-agent workflow used to turn a proposal brief into a CLI delivery. It is not a Typhoon subsystem and not one fixed tool; it may be Codex, Claude Code CLI, Cursor, or any comparable agentic coding environment. Forge quality depends on the chosen agent, model, repo context, prompt, available tools, and tests. Typhoon does not invoke the forge automatically. The operator reads the proposal brief, does the forge work externally, and submits the hardened requirement plus resulting source back via `typhoon tool propose submit`. Automating the forge invocation is deferred until the full manual loop is validated.
 
-**Recorder is the only signal writer.** Gateways, schedulers, and external-agent sidecars never write signal rows directly. They route use events through the runtime, and the runtime asks the recorder to persist normalized signal rows. Dream reads those rows later; it does not collect online activity itself.
+**Recorder is the only signal writer.** Channel gateway edge loops, schedulers, and external-agent sidecars never write signal rows directly. Gateway worker loops and other use-plane entry points route use events through the runtime, and the runtime asks the recorder to persist normalized signal rows. Dream reads those rows later; it does not collect online activity itself.
 
 ```
  User works with Typhoon (Telegram primary; external-agent CLI for ops)
@@ -106,6 +106,10 @@ Identity flow per channel turn. Typhoon does not authenticate users itself — p
 
 1. **Channel binding → user.** `(channel, bot_account_id, peer_id) → user_id`, via a verified binding row.
 2. **Bot account → active persona.** v0.1 uses the simplest model: **one Telegram bot account corresponds to one persona**. The bot's persona is configured at deploy time. Future versions may add per-thread or command-driven persona switching, but v0.1 ships with per-bot persona because it's the cleanest mapping (the bot's credentials already authenticate it as that persona) and it generalises to future channels (Slack workspace = persona, Discord server = persona).
+
+If the binding lookup misses, the channel message is not accepted as a Typhoon turn. v0.1 marks the inbound queue row `dead_letter` with reason `binding_missing`; it does not auto-bind the peer, does not default to an admin identity, and does not emit an onboarding reply.
+
+The Telegram path is queued inside one gateway daemon. The gateway edge loop talks to Telegram through the adapter and writes normalized updates into a durable channel inbox; the Typhoon Way worker loop claims those rows, runs the agent loop, and writes replies to a channel outbox that the edge loop delivers. This is intentionally a Turso-backed queue, not an in-memory Rust channel, because the handoff must survive daemon restarts, expose retry/dead-letter state, and keep external-system I/O decoupled from the Typhoon agent loop.
 
 The role gate is on the *user*, not the persona. Only a user with `role='admin'` may ratify proposals or mutate the tool registry; a `role='author'` user contributes signals, consumes memory, and runs installed tools through whichever of their personas is active. The deploying party is seeded as the first admin at `typhoon init`. v0.1 has exactly one admin and zero or more authors.
 
@@ -300,7 +304,7 @@ A CLI that shells out to `jq` or `gh` is portable only where those exist. The fo
 
 ## 5. Evidence This Is Reachable
 
-**Hermes Agent (Nous Research; v0.10.0 on Apr 16, 2026)** is evidence that an agent with a closed learning loop can be useful in the wild. As of Apr 24, 2026, the official GitHub repo reports roughly 97.8K stars. The important ideas for Typhoon are not the star count; they are the shape of the loop: create reusable artifacts from experience, improve them through use, retrieve past sessions, run through messaging gateways, and schedule unattended work.
+**Hermes Agent (Nous Research; v0.10.0 on Apr 16, 2026)** is evidence that an agent with a closed learning loop can be useful in the wild. As of Apr 24, 2026, the official GitHub repo reports roughly 97.8K stars. The important ideas for Typhoon are not the star count; they are the shape of the loop: create reusable artifacts from experience, improve them through use, retrieve past sessions, run through messaging channels, and schedule unattended work.
 
 Hermes forges skill documents and is now exploring self-evolution of skills, prompts, tool descriptions, and eventually code through trace-driven optimization plus human-reviewed PRs. Typhoon adopts the parts that fit: trace analysis, requirement hardening, artifact lifecycle, scheduled review, and human ratification. Typhoon rejects the part that creates an in-context skill catalog. The reusable artifact remains a CLI, not a skill file.
 
@@ -347,7 +351,7 @@ Typhoon itself: no YAML, no JSON config, no Python, no Node. Generated CLIs: wha
 
 ```bash
 typhoon init --url URL --token TOK     # connect persona-core TursoDB, run Typhoon migrations + seed
-typhoon gateway --telegram             # Telegram bot daemon (primary channel)
+typhoon gateway                        # Channel daemon: Telegram edge loop + queue-consuming worker loop
 
 typhoon dream [--catchup]              # manual dream cycle (writes proposal briefs)
 typhoon cron                           # scheduler daemon
