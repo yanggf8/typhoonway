@@ -16,7 +16,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - Config CRUD with type validation, read-only `typhoon sql`
 - Use-plane CLI subcommands (`typhoon signal record`, `typhoon memory query`) — agent-invoked one-shots that invoke Core directly through normal CLI dispatch; the same path covers development shakedown via shell scripts
 - Signal capture: tool calls, corrections, outcomes, session boundaries, success tagging
-- Dream cycle (light / REM / deep) — organizes signals and writes **proposal briefs**, not requirements and not code
+- Dream cycle (light / REM / deep / prune) — organizes signals and writes **proposal briefs**, not requirements and not code; coordinated through a `dream_runs` lease row with heartbeat, cooperative cancel, bounded runtime, status query, and ETA
 - Memory extraction (mem0-style) inside the dream cycle; bounded retrieval (Top-K + similarity)
 - Operator hand-off: `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]`
 - Hardcoded-path lint (cross-platform, regex)
@@ -60,7 +60,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W4 | `typhoon sql` — SELECT-only guard | W2 | SELECT works; writes rejected | S |
 | W5 | Use-plane CLI subcommands (`typhoon signal record`, `typhoon memory query`) wired into Core, recorder path, session model, tool-call signal capture | W2 | Hand-run shell script routes through runtime/recorder and produces `dream_signals` rows | M |
 | W6 | Success tagging (exit 0 + no next-turn correction) | W5 | Signals carry `success` flag correctly | S |
-| W7 | Stale-signal prune (7d) + dream run file lock | W5 | Re-running dream is safe; old signals cleaned | S |
+| W7 | Stale-signal prune (7d); dream `dream_runs` lease (acquire / heartbeat / stale-takeover); cooperative cancel handlers per phase; max-runtime enforcement; `typhoon dream status` (with EWMA-or-static ETA) and `typhoon dream cancel [--wait]` | W5 | Re-running dream is safe (lease takeover); admin can query phase / ETA and request graceful shutdown; old signals cleaned | M |
 | W8 | Dream LLM client (cheap batch model), `dream_runs` logging | W5 | Dream can make LLM calls; runs logged | M |
 | W9 | Memory extraction (mem0-style) inside dream | W8 | `memories` table populated from signals | M |
 | W10 | Bounded retrieval (Top-K + similarity + scope) | W9 | `typhoon memory query` next-session shows relevant memories within budget | M |
@@ -69,7 +69,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W13 | Persona proposal flow | W8 | Persona-attribute changes routed through approval queue | S |
 | W14 | `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]` | W12 | Operator can hand hardened requirement + LLM-facing tool descriptor + source back | M |
 | W15 | Hardcoded-path lint | W14 | Obvious absolute paths rejected | S |
-| W16 | Atomic approve (binary + registry + seed memory in one tx) | W14, W15 | Approve is all-or-nothing | M |
+| W16 | Atomic approve (binary + registry + reviewed `tool.md` + seed memory in one tx) | W14, W15 | Approve is all-or-nothing | M |
 | W17 | CLI lifecycle commands — list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps | W16 | Full management surface | M |
 | W18 | Replacement flow + `.history/` archival + atomic swap | W16 | Replacement approval swaps cleanly | M |
 | W19 | 3-strike rejection tracking (patterns + replacements) | W12, W18 | Dream stops re-proposing rejected patterns | S |
@@ -251,7 +251,7 @@ Each risk has a trigger (how we notice early), a built-in mitigation (designed i
 | **R3. Hardcoded-path lint over-rejects useful source** | Path-lint rejection rate > 20% of submissions or repeated operator complaints | False positives are accepted in v0.1; forge revises source and resubmits | `typhoon dream stats` / proposal stats show lint rejection counts and reasons | Tune regex after examples accumulate; allow explicit operator override in a later version |
 | **R4. Telegram signal volume too sparse** | 7-day rolling average < 20 signals/day | External-agent channel runs in parallel; Telegram is primary but not only — operator-driven activity through external agent CLIs also produces signals | `typhoon dream stats` shows 7-day signal volume per channel; `typhoon health` shows channel queue backlog so sparse signals are not confused with stuck delivery | Lower `dream.min_frequency`; add lightweight `/useful` Telegram command for explicit positive tagging |
 | **R5. Operator forge burden heavier than forecast** | Expired-unforged ratio > 50% over 2 weeks | Thresholds tunable to throttle proposal rate | `typhoon dream stats` shows forge queue depth + expired rate | Raise thresholds; bring forward v0.2 forge automation |
-| **R6. TursoDB concurrency / availability** | Transaction errors in logs; dream hangs | Single-writer task inside Typhoon; `BEGIN IMMEDIATE` for all approval transactions; file lock for dream run mutex | `typhoon health` pings DB, reports latency + last-successful-write | Retry with exponential backoff; trust Turso SLA; if sustained, consider local libSQL fallback (v0.2 decision) |
+| **R6. TursoDB concurrency / availability** | Transaction errors in logs; dream hangs | Single-writer task inside Typhoon; `BEGIN IMMEDIATE` for all approval transactions; `dream_runs` lease row + heartbeat + cooperative cancel for dream | `typhoon health` pings DB, reports latency + last-successful-write; rolls up dream lease state | Retry with exponential backoff; trust Turso SLA; if sustained, consider local libSQL fallback (v0.2 decision) |
 | **R7. Forge's correctness claim mismatches reality** | Forged CLI passes forge's tests but behaves wrong in real use | Tier review intensity is operator-calibrated; mutate tier requires line-by-line review; forge submits a hardened requirement + test plan for review | Post-install `use_count` / `success_count` ratio per CLI | `typhoon tool rollback`; dream proposes replacement; tighten future forge requirements and test plans |
 | **R8. Success tagging false-positives from abandoned tasks** | Operator notices CLIs proposed for workflows they didn't actually complete; dream quality degrades despite threshold tuning | Simple heuristic for v0.1: exit 0 + no next-turn correction. Known limitation. | `typhoon dream stats` exposes proposal origin breakdown: chains with explicit positive signal vs. chains tagged successful by heuristic only | Add explicit `/good` Telegram command for positive tagging; in v0.2, consider LLM-based correction detection |
 

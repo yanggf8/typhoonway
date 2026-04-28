@@ -38,7 +38,7 @@ No skill registry. No system-prompt catalog. No agent-side install.
 
 **Typhoon is language-neutral.** It doesn't write CLI source code — it writes proposal briefs. The operator (via the forge) picks whatever language fits (bash, Python, Rust, Deno, Go…) subject only to "runs on the Linux/Mac host that hosts Typhoon." Typhoon catalogs, installs, monitors health, and manages lifecycle — it never synthesizes.
 
-**Forge is manual in v0.1.** "Forge" means the operator-driven coding-agent workflow used to turn a proposal brief into a CLI delivery. It is not a Typhoon subsystem and not one fixed tool; it may be Codex, Claude Code CLI, Cursor, or any comparable agentic coding environment. Forge quality depends on the chosen agent, model, repo context, prompt, available tools, and tests. Typhoon does not invoke the forge automatically. The operator reads the proposal brief, does the forge work externally, and submits the hardened requirement plus resulting source back via `typhoon tool propose submit`. Automating the forge invocation is deferred until the full manual loop is validated.
+**Forge is manual in v0.1.** "Forge" means the operator-driven coding-agent workflow used to turn a proposal brief into a CLI delivery. It is not a Typhoon subsystem and not one fixed tool; it may be Codex, Claude Code CLI, Cursor, or any comparable agentic coding environment. Forge quality depends on the chosen agent, model, repo context, prompt, available tools, and tests. Typhoon does not invoke the forge automatically. The operator reads the proposal brief, does the forge work externally, and submits the hardened requirement, `tool.md`, and resulting source back via `typhoon tool propose submit`. Automating the forge invocation is deferred until the full manual loop is validated.
 
 **Recorder is the only signal writer.** Channel gateway edge loops, schedulers, and external-agent sidecars never write signal rows directly. Gateway worker loops and other use-plane entry points route use events through the runtime, and the runtime asks the recorder to persist normalized signal rows. Dream reads those rows later; it does not collect online activity itself.
 
@@ -66,14 +66,15 @@ No skill registry. No system-prompt catalog. No agent-side install.
     Cursor, or similar). The forge sharpens the requirement, designs tests /
     examples / checks, writes source, iterates, and submits:
     `typhoon tool propose submit <id> --requirements <file> \
-      --source <file> [--tests <file>]`
-    Typhoon attaches hardened requirement + source + forge's correctness
-    argument, records declared external dependencies, runs the
-    hardcoded-path lint, and moves status → awaiting_user.
+      --tool-doc <tool.md> --source <file> [--tests <file>]`
+    Typhoon attaches hardened requirement + tool.md + source +
+    forge's correctness argument, records declared external dependencies,
+    runs the hardcoded-path lint, and moves status → awaiting_user.
                        │
                        ▼
     Operator reviews the delivery (brief vs. hardened requirement vs.
-    source vs. forge's correctness argument) and approves or sends back.
+    tool.md vs. source vs. forge's correctness argument) and approves
+    or sends back.
                        │
                        ▼
     Artifact lands in ~/.typhoon/bin/<name>, chmod +x, added to PATH.
@@ -84,6 +85,8 @@ No skill registry. No system-prompt catalog. No agent-side install.
 ```
 
 Dream can run on a cheap batch model because it only writes proposal briefs. The operator handles forge work out-of-band with whichever coding agent gives the best requirement and code quality for that proposal. Online interaction touches the frontier LLM and the relevant memories — never a skill catalog.
+
+Dream is a single-writer batch with a lease row in `dream_runs` (heartbeat-bearing; phase ∈ {light, rem, deep, prune}). The operator can query a running dream's phase, elapsed time, and ETA via `typhoon dream status`, and request a cooperative shutdown via `typhoon dream cancel` — the dream observes the request at the next phase boundary, persists work it has already paid for (e.g., a deep-phase LLM response that has already returned), and exits with status `cancelled`. Total runtime is bounded by `dream.max_runtime_minutes`. A second `typhoon dream` invocation while a live run exists prints status rather than failing with a lock error, so the operator can always tell what's happening.
 
 ### Users and personas
 
@@ -129,7 +132,9 @@ Memory writes happen inside the dream run — worst case is noise in next sessio
 
 ### Memory, not a skill registry
 
-Memory is how the agent discovers its own CLIs. When the user says "deploy the preview," memory retrieval returns *"You have `deploy-preview` in `~/.typhoon/bin`. It runs build + test + vercel push. Last run: exit 0."* The agent calls it.
+The active tool manifest is how the channel LLM decides which approved CLI to call. Each installed tool has a reviewed `tool.md` descriptor (see `TOOL.md`) that states when to use it, when not to use it, its command shape, inputs, outputs, side effects, examples, failure modes, and dependencies. Core loads approved registry rows and their `tool.md` descriptors through the Tool registry, then builds the bounded LLM tool manifest for the turn. The LLM chooses tool calls from that manifest; core only mediates execution and records the result.
+
+Memory remains useful context, but it is not the tool interface. When the user says "deploy the preview," memory retrieval may return *"Last successful preview deploy used `deploy-preview` after build passed."* The actual callable surface comes from that tool's `tool.md`, not from an inferred memory snippet.
 
 Memory structure borrows the useful parts of mem0 v3 rather than depending on mem0 as a service: ADD-only memory writes, entity-aware retrieval, multi-signal ranking (semantic + keyword + entity), and strict token-budgeted retrieval. Extraction happens inside the dream cycle instead of per-turn — cheaper at scale and the batching is what makes dream phases worthwhile in the first place. **Retrieval is bounded** (Top-K + similarity threshold + token budget) so memory never becomes a skill catalog in disguise.
 
@@ -161,7 +166,7 @@ Dream checks existing CLIs before drafting a new brief — by description embedd
 
 **Replacements never auto-approve, even pure tier.** A pure-function rewrite still changes behavior downstream callers depend on — silently swapping it would break the user's habits.
 
-On approval of a replacement, the old binary moves to `~/.typhoon/bin/.history/<name>.<timestamp>`. `typhoon tool rollback <name>` reverts. The whole swap is atomic — backup, replace, registry update, seed memory update all succeed together or none do.
+On approval of a replacement, the old binary moves to `~/.typhoon/bin/.history/<name>.<timestamp>`. `typhoon tool rollback <name>` reverts. The whole swap is atomic — backup, replace, registry update, reviewed `tool.md` update, and context seed-memory update all succeed together or none do.
 
 ### Human in the loop
 
@@ -180,12 +185,13 @@ The brief carries:
 The delivery carries:
 
 - Hardened requirement (final interface contract, acceptance criteria, out-of-scope items, edge cases, and test plan)
+- `tool.md` (LLM-facing descriptor: when to use, command shape, inputs/outputs, side effects, examples, failure modes, dependencies)
 - Source code
 - The forge's correctness argument (its own tests, example invocations, whatever it considered sufficient)
 - External dependencies used
 - Language + runtime
 
-Approval means the operator is satisfied with the delivery against the brief and the hardened requirement. Typhoon runs the hardcoded-path lint and records metadata, but it does not judge correctness — that's the forge's job and the operator's call.
+Approval means the operator is satisfied with the delivery against the brief, the hardened requirement, and the LLM-facing `tool.md`. Typhoon runs the hardcoded-path lint and records metadata, but it does not judge correctness — that's the forge's job and the operator's call.
 
 Three rejections on the same pattern (or the same replacement) stops dream from re-proposing it — same 3-strike rule as persona proposals.
 
@@ -207,7 +213,7 @@ A CLI has one of these states at any time:
 | `superseded` | Replaced by a newer CLI; source preserved in `.history/`, lineage recorded |
 | `deleted` | Registry row removed; binary archived to `.history/` unless hard-purged |
 
-Proposals have their own state machine: `awaiting_forge → awaiting_user → approved | rejected`. A brief lands first (no code); the operator forges externally and submits the hardened requirement plus source via `typhoon tool propose submit`, which attaches requirement + source + forge's correctness argument, records declared dependencies and runtime metadata, runs the hardcoded-path lint, and flips to awaiting_user. The operator then reviews the delivery against the brief and approves or rejects.
+Proposals have their own state machine: `awaiting_forge → awaiting_user → approved | rejected`. A brief lands first (no code); the operator forges externally and submits the hardened requirement, `tool.md`, and source via `typhoon tool propose submit`, which attaches requirement + `tool.md` + source + forge's correctness argument, records declared dependencies and runtime metadata, runs the hardcoded-path lint, and flips to awaiting_user. The operator then reviews the delivery against the brief and approves or rejects.
 
 ### Lifecycle
 
@@ -358,9 +364,9 @@ typhoon cron                           # scheduler daemon
 
 typhoon tool propose list [--awaiting-forge|--awaiting-user]   # CLI proposals
 typhoon tool propose show <id>                                 # brief + evidence
-typhoon tool propose submit <id> --requirements <file> --source <file>
-                                                          # attach forged requirement, source,
-                                                          # correctness argument, deps, metadata
+typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file>
+                                                          # attach forged requirement, tool.md,
+                                                          # source, correctness argument, deps, metadata
 typhoon tool propose approve|edit|reject <id>             # resolve once awaiting_user
 typhoon tool list|show|disable|enable|rollback|delete|purge|promote|sync|check-deps  # lifecycle (see §4)
 typhoon persona list|show|approve|reject                  # persona-attribute proposals

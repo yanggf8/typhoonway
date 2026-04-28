@@ -44,7 +44,7 @@ HLD answers "what is the system / what are the responsibilities / what are the b
 
 8. **S5A and S5D first; S5B and S5C can lag.** S1–S4 don't reference all of S5 equally. S5A (data-access APIs) is consumed by every subsystem; S5D (transaction/lock primitives) is composed by every subsystem that mutates state. Together they are the sign-off blocker. S5B (storage adapters) is internal to S5A — S1–S4 don't see it directly, so it may follow alongside S5A. S5C (service adapters) is consumed only by S2 (channels) and S3 (LLM calls), so it may be drafted in parallel with S2.
 
-9. **Forge contract gets its own subheader inside S4.** v0.1 forge is operator-driven outside Typhoon, but the handoff (`tool propose submit` accepts requirements + source + tests + path-lint pass) is a contract Typhoon enforces. Don't bury it inside the lifecycle subsection.
+9. **Forge contract gets its own subheader inside S4.** v0.1 forge is operator-driven outside Typhoon, but the handoff (`tool propose submit` accepts requirements + `tool.md` + source + tests + path-lint pass) is a contract Typhoon enforces. Don't bury it inside the lifecycle subsection.
 
 10. **Critical sequences slot per chapter.** HLD's dense single-paragraph prose for things like the registry mutation protocol and the dream three-phase pipeline becomes step-numbered procedures with side effects per step at DLD level. Sequence diagrams for multi-actor cases (e.g., forge submission).
 
@@ -64,6 +64,7 @@ DLD.md
     - persona-core's tables vs. Typhoon's tables; coexistence rules
     - tables, indexes, constraints (Typhoon-owned)
     - channel inbox/outbox queue schema, lease/retry/dead-letter semantics, provider-update dedupe keys
+    - `dream_runs` lease schema (host, pid, status, phase_started_at, last_heartbeat_at, cancel_requested_at, expected_finish_at, log_tail), heartbeat tick, stale-takeover predicate, terminal-status set, phase-duration EWMA storage
     - migration rules (versioned per owner; additive-only)
     - row ownership / scoping (persona_slug-tagged, user_id-tagged, vs system-scoped)
     - schema-level invariants and CHECK constraints
@@ -108,6 +109,7 @@ These are decisions that should be stated up front, not rediscovered per chapter
 - **Per-row `persona_slug` enforcement.** Every data-access API for per-persona state (signals, memory, persona proposals) takes `persona_slug` and filters every read and write — verified by test, not by convention. Cross-persona reads through these APIs are forbidden; dream is the only consumer that opts into a cross-persona scan, through a separate API.
 - **Channel queue is durable loop-to-loop handoff.** The gateway edge loop and gateway worker loop run in one v0.1 daemon, but they communicate through Typhoon-owned Turso inbox/outbox rows with lease owner/expiry, attempt count, next-at, provider update ID dedupe, and dead-letter state. Do not replace this with an in-memory Rust channel; the queue is the durable boundary that preserves work across daemon restarts and can support split deployments later.
 - **No implicit identity fallback for channel turns.** A queued channel turn may enter core only after the gateway worker loop resolves a verified binding and a configured persona. Missing binding means the inbound row moves to `dead_letter` with reason `binding_missing`; it is not auto-bound, not mapped to an admin default, and not answered with an onboarding prompt unless a future design adds an explicit binding flow.
+- **`tool.md` is required for LLM tool use.** Every approved forged/promoted CLI must have a reviewed `tool.md` descriptor. Core builds the bounded LLM tool manifest from Tool registry rows and `tool.md`; memory may add context, but it is not the callable interface.
 - **persona-core schema is read-mostly.** Typhoon's data-access libraries treat persona-core's `user` and `persona` tables as read-mostly. The only Typhoon-driven write into persona-core's schema is a persona-attribute column update through the Persona attributes library, executed inside an approved persona-proposal transaction. No Typhoon code may write `user`, `audit_log`, or `invite`.
 - **Review order.** S5A (data-access APIs) and S5D (transaction/lock primitives) are the sign-off blocker for S1–S4. S5B (storage adapters) may follow alongside S5A; S5C (service adapters) may be drafted in parallel with S2. After S5A and S5D are stable, S1–S4 are independent.
 
@@ -122,7 +124,11 @@ These don't need to be settled before drafting starts but should be tracked:
 5. **Retrieval budget knobs.** Exact `top_k`, similarity threshold, per-turn token budget. PLAN §8 lists as placeholders to tune in first two weeks.
 6. **Replacement similarity thresholds.** Dream's "is this proposal a replacement for an existing tool?" decision; threshold values.
 7. **Initial threshold values.** `dream.min_frequency`, `dream.min_score`, `dream.min_recall`, `dream.min_unique_queries`, `dream.recency_half_life_days`. Placeholders in HLD; tune in first two weeks of operation.
-8. **Sequence diagram tooling.** Mermaid `sequenceDiagram` works in HTML render; readable as plaintext. Use it or write step-numbered prose? Likely both, depending on flow complexity.
+8. **`tool.md` validation detail.** Exact heading parser, size budget, manifest truncation policy, and whether malformed optional sections warn or block submission.
+9. **Sequence diagram tooling.** Mermaid `sequenceDiagram` works in HTML render; readable as plaintext. Use it or write step-numbered prose? Likely both, depending on flow complexity.
+10. **Dream lease tunables.** `dream.heartbeat_interval_seconds` (default 30), `dream.heartbeat_timeout_seconds` (default 90, three heartbeats), `dream.max_runtime_minutes` (default 120). Confirm or revise after first two weeks of operation.
+11. **Dream phase ETA model.** EWMA over recent successful `dream_runs` phase durations (decay factor TBD), with a static fallback table `dream.expected_phase_duration_seconds.{light,rem,deep,prune}` for the first ~5 runs before EWMA stabilises. DLD nails down the decay factor, the EWMA-vs-fallback switch criterion, and where the EWMA state is stored.
+12. **Dream cancel granularity inside the deep phase.** The deep phase iterates over chunks (each chunk = one LLM call producing one or more memories/proposals). Cancel observed mid-chunk: finish the current LLM call (already paid for) and persist its result, or abandon the in-flight LLM response? Recommend the former; DLD specifies precisely where the cancel poll happens relative to LLM call boundaries.
 
 ## Non-goals for DLD
 
