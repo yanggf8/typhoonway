@@ -1,0 +1,66 @@
+flowchart TB
+    subgraph AppModules["Application modules"]
+      direction TB
+      BOOT[Bootstrap]
+      GATEWAY[Channel gateway<br/>edge + worker loops]
+      SCHED[Scheduler]
+      CORE[Core]
+      REC[Signal recorder]
+      DREAM[Dream cycle]
+      TOOL[Tool manager<br/>+ path lint]
+      PERSONA[Persona manager]
+      HEALTH[Health inspector]
+    end
+
+    subgraph DataModules["Data access modules"]
+      direction LR
+      REG[Tool registry<br/>shared]
+      MEM[Memory store<br/>per persona]
+      SIG[Signal store<br/>per persona]
+      CHQ[Channel queue<br/>inbox + outbox]
+      PROP[Proposal queue<br/>cli + persona]
+      CFG[Config<br/>system-scoped]
+      ID[Identity &amp; persona<br/>+ role lookup]
+      PA[Persona attributes<br/>persona-core row]
+    end
+
+    subgraph ServiceAdapterModules["Service adapter modules"]
+      direction LR
+      CHAN[Channel service adapters]
+      LLM[LLM service adapters]
+    end
+
+    %% Application-internal edges
+    GATEWAY --> CORE
+    SCHED --> CORE
+    CORE ==>|drives| REC
+
+    %% Service adapter edges
+    GATEWAY --> CHAN
+    CORE --> LLM
+    DREAM --> LLM
+
+    %% Identity reads at the edges
+    GATEWAY --> ID
+    TOOL --> ID
+    PERSONA--> ID
+
+    %% Application to data access
+    CORE --> REG
+    CORE --> MEM
+    GATEWAY --> CHQ
+    REC --> SIG
+    DREAM --> SIG
+    DREAM --> MEM
+    DREAM --> PROP
+    DREAM --> REG
+    TOOL --> PROP
+    TOOL --> REG
+    PERSONA--> PROP
+    PERSONA--> PA
+    BOOT --> CFG
+    BOOT --> ID
+
+    %% Health reads daemon liveness/heartbeat state
+    HEALTH -.->|reads liveness| GATEWAY
+    HEALTH -.->|reads liveness| SCHED

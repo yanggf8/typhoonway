@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant Telegram as Telegram service
+    participant Adapter as Telegram adapter
+    participant Edge as Gateway edge loop
+    participant Queue as Channel queue
+
+    Edge->>Adapter: poll_updates(channel_id, cursor)
+    Adapter->>Telegram: getUpdates(bot_token, offset)
+    Telegram-->>Adapter: telegram_updates
+    Adapter-->>Edge: channel_updates(channel_id, bot_account_id, peer_id, update_id, payload)
+    Edge->>Queue: enqueue_inbound(update_id, channel_update)
+    Queue-->>Edge: enqueued_or_duplicate
+    Edge->>Queue: claim_outbound(gateway_id, lease_ttl)
+    alt outbound ready
+      Queue-->>Edge: outbound_message(channel_id, peer_id, reply)
+      Edge->>Adapter: post_message(channel_id, peer_id, reply)
+      Adapter->>Telegram: sendMessage(chat_id, reply)
+      Telegram-->>Adapter: send_result(message_id)
+      Adapter-->>Edge: delivery_result(message_id)
+      Edge->>Queue: mark_outbound_delivered(outbound_id, provider_message_id)
+    else no outbound ready
+      Queue-->>Edge: none
+    end
+    Note over Edge,Queue: Edge loop owns external channel IO only and never resolves identity or calls core.

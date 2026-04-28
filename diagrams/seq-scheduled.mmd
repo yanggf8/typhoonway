@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant Cron as Scheduler
+    participant Core as Core dispatcher
+    participant Dream as Dream batch
+    participant Tool as Configured tool
+    participant Recorder as Signal recorder
+    participant Data as Data-access APIs
+
+    Cron->>Data: load_due_entries(now)
+    Data-->>Cron: due_entries
+    alt use-plane entry
+      Cron->>Core: dispatch(scheduled_invocation, persona_slug)
+      Core->>Tool: execute(tool_name, args, env)
+      Tool-->>Core: tool_result(exit_code, stdout, stderr)
+      Core->>Recorder: record_signal(invocation, result, success_tags)
+      Recorder->>Data: insert_signal(persona_slug, signal)
+    else management entry
+      Cron->>Dream: run_dream(reason=scheduled)
+      Dream-->>Cron: dream_exit(status)
+    end
+    Cron->>Data: mark_schedule_attempt(entry_id, status)
+    Note over Cron,Recorder: Only the use-plane branch records a signal.

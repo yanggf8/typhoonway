@@ -1,0 +1,48 @@
+stateDiagram-v2
+    [*] --> active : tool propose approve
+    [*] --> active : tool promote
+    active --> disabled : tool disable
+    disabled --> active : tool enable
+    active --> superseded : tool propose approve [replacement]
+    active --> active : tool rollback
+    active --> deleted : tool delete
+    disabled --> deleted : tool delete
+    superseded --> deleted : tool delete
+    deleted --> [*] : tool purge
+
+    note right of active
+        Steady state. Use and success
+        counters increment here.
+        Dream may propose replacement
+        (rising error rate) or
+        deprecation (prolonged disuse).
+        tool rollback is a self-loop:
+        active version swaps with
+        a predecessor from .history/.
+    end note
+
+    note right of superseded
+        Atomic swap on approve:
+        predecessor moves to .history/,
+        new binary installed via
+        registry mutation protocol;
+        lineage, reviewed tool.md,
+        and seed memory updated.
+    end note
+
+    note left of deleted
+        Row retained for lineage
+        and tool history; binary
+        archived to .history/.
+        purge is the irreversible
+        terminal step that removes
+        the row and clears .history/.
+    end note
+
+    note right of [*]
+        Filesystem leftovers may persist
+        if a process crashes during install.
+        The DB registry row and checksum are
+        source of truth; tool sync removes or
+        surfaces mismatches out of band.
+    end note

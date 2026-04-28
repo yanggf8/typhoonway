@@ -1,0 +1,13 @@
+flowchart TB
+    S1[S1 — Platform<br/>Bootstrap, Health]
+    S2[S2 — Channels &amp; Dispatch<br/>Gateway, Endpoints,<br/>Scheduler, Core, Recorder]
+    S3[S3 — Self-growth<br/>Dream cycle]
+    S4[S4 — Registry management<br/>Tool manager, Persona manager]
+    S5[S5 — Data access &amp; adapters<br/>typed APIs + service adapters]
+
+    S1 --> S5
+    S2 --> S5
+    S3 --> S5
+    S4 --> S5
+
+    S1 -.->|observes daemons| S2

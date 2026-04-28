@@ -29,10 +29,10 @@
   .layer-matrix .integration-block { border: 1px solid var(--rule); padding: .45rem .55rem; background: #fcfcfc; }
   .layer-matrix .layer-name { font-weight: 700; display: block; margin-bottom: .2rem; }
   .layer-matrix .layer-note { color: var(--muted); }
-  .mermaid { background: #fff; padding: .5rem 0; }
+  figure.diagram { margin: 1rem 0 1.3rem; }
+  figure.diagram img { display: block; max-width: 100%; height: auto; background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: .5rem; box-sizing: border-box; }
+  figure.diagram figcaption { margin-top: .35rem; color: var(--muted); font-size: .9em; }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', flowchart: { htmlLabels: true } });</script>
 </head>
 <body>
 
@@ -89,92 +89,10 @@
 
 <p>The system context is shown below. Typhoon is split into a use plane (everything routing through core, where signals are recorded), a channel gateway role (one daemon with edge and worker loops around the durable channel queue), and a management plane (everything operating directly on state, no signals generated). The external-agent channel bypasses the queue because each agent action is a one-shot subcommand into core. The gateway worker loop, the use-plane CLI subcommands, and scheduler use-target dispatch are the paths into core. The frontier LLM is reached only through core, and only on the queued gateway-worker path. Two paths converge on the tool manager: dream writes proposal briefs into its queue, and forged deliveries return through it via <code>tool propose submit</code>. Solid arrows are flows Typhoon controls; dotted arrows mark the forge step, which the operator drives outside Typhoon's control plane in v0.1 and may automate with a forge CLI later.</p>
 
-<div class="mermaid">
-flowchart TB
-    OP([Operator])
-    USERS([Users<br/><i>via channel binding</i>])
-
-    subgraph Channels[" "]
-      direction LR
-      TG[Telegram bot]
-      EXT["External agent CLI<br/>Claude Code, Cursor, Codex<br/><i>operator only in v0.1</i>"]
-    end
-
-    subgraph Typhoon["Typhoon — one binary, two planes"]
-      direction TB
-
-      subgraph UsePlane["Use plane — routes through core, records signals"]
-        direction TB
-
-        subgraph ChannelPath["typhoon gateway — edge loop + worker loop"]
-          direction LR
-          EDGE["<b>gateway edge loop</b><br/>Telegram-facing<br/><i>adapter + queue only</i>"]
-          WORKER["<b>gateway worker loop</b><br/>Typhoon Way agent loop<br/><i>queue consumer; invokes core</i>"]
-        end
-
-        CORE{{"<b>Typhoon core</b><br/>dispatcher<br/><i>master path for every use;<br/>sole driver of the recorder</i>"}}
-        REC[/"<b>Signal recorder</b><br/><i>sole writer to the signal store;<br/>driven only by core</i>"/]
-      end
-
-      CRON["<b>typhoon cron</b><br/>general scheduler<br/><i>use targets via core;<br/>management targets direct</i>"]
-
-      subgraph MgmtPlane["Management plane — bypasses core, no signals"]
-        direction TB
-        TOOLMGR["<b>typhoon tool — tool manager</b><br/><b>ingest:</b> propose list / show / submit /<br/>approve / reject<br/><b>operate:</b> list / show / diff / history /<br/>disable / enable / rollback /<br/>delete / purge / promote / sync"]
-        DREAM["<b>typhoon dream</b><br/><i>standalone batch; lease row in dream_runs.<br/>Reads signals, writes proposals + memories.<br/>status / cancel via dream_runs</i>"]
-        HEALTH["<b>typhoon health</b><br/><i>reports gateway/cron<br/>daemon liveness</i>"]
-      end
-    end
-
-    subgraph LLMs[" "]
-      direction LR
-      OLLM["Frontier LLM<br/><i>queued gateway-worker path only</i>"]
-      DLLM[Dream LLM<br/>cheap batch]
-    end
-
-    subgraph State["Shared state"]
-      direction LR
-      DB[(TursoDB cloud DB<br/><i>required state store</i>)]
-      CHQ[(Channel queue rows<br/><i>Turso inbox / outbox</i>)]
-      FS["Filesystem<br/>~/.typhoon/bin<br/>.history/"]
-    end
-
-    FORGE["Forge workflow<br/>manual v0.1;<br/>CLI-assisted later"]
-
-    OP <--> TG
-    OP <--> EXT
-    USERS <--> TG
-    OP --> TOOLMGR
-    OP --> DREAM
-    OP -.drives externally.-> FORGE
-    FORGE -.requirements + tool.md + source + tests + correctness argument.-> OP
-    FORGE -.via operator: tool propose submit.-> TOOLMGR
-
-    TG <--> EDGE
-    EDGE <--> CHQ
-    WORKER <--> CHQ
-    CHQ -.tables in.-> DB
-    WORKER --> CORE
-    EXT -->|typhoon signal record / memory query| CORE
-    CRON -->|use targets| CORE
-
-    CORE <-->|prompts + tool-call loop| OLLM
-    CORE -->|execute requested tools on PATH| FS
-    CORE -->|memory reads| DB
-    CORE ==>|tells recorder to record| REC
-    REC ==>|writes signals| DB
-
-    CRON -.spawns management target.-> DREAM
-
-    DREAM <-->|proposal brief drafting| DLLM
-    DREAM -->|writes proposal briefs: awaiting_forge| TOOLMGR
-    DREAM <--> DB
-    TOOLMGR <--> DB
-    TOOLMGR <--> FS
-
-    HEALTH -.reads gateway liveness.-> EDGE
-    HEALTH -.reads liveness.-> CRON
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/system-context.svg" alt="System context diagram">
+  <figcaption>System context. <a href="diagrams/system-context.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <p>Typhoon's lifecycle has four stages. Stage 1 runs once for an instance. Stages 2 through 4 repeat: online interaction records signals, dream organizes those signals into proposal briefs, and forge plus ratification turns selected briefs into installed CLIs or rejected proposals. After ratification, the system returns to online interaction.</p>
 
@@ -319,74 +237,10 @@ flowchart TB
 
 <p>The diagram below shows the modules and the load-bearing dependencies between them. Edges are not exhaustive — only the dependencies that matter for understanding Typhoon's structure are drawn. Data-access modules also use the data-store layer, and service adapters use the external-systems side column; those edges are omitted to keep the picture readable.</p>
 
-<div class="mermaid">
-flowchart TB
-    subgraph AppModules["Application modules"]
-      direction TB
-      BOOT[Bootstrap]
-      GATEWAY[Channel gateway<br/>edge + worker loops]
-      SCHED[Scheduler]
-      CORE[Core]
-      REC[Signal recorder]
-      DREAM[Dream cycle]
-      TOOL[Tool manager<br/>+ path lint]
-      PERSONA[Persona manager]
-      HEALTH[Health inspector]
-    end
-
-    subgraph DataModules["Data access modules"]
-      direction LR
-      REG[Tool registry<br/>shared]
-      MEM[Memory store<br/>per persona]
-      SIG[Signal store<br/>per persona]
-      CHQ[Channel queue<br/>inbox + outbox]
-      PROP[Proposal queue<br/>cli + persona]
-      CFG[Config<br/>system-scoped]
-      ID[Identity &amp; persona<br/>+ role lookup]
-      PA[Persona attributes<br/>persona-core row]
-    end
-
-    subgraph ServiceAdapterModules["Service adapter modules"]
-      direction LR
-      CHAN[Channel service adapters]
-      LLM[LLM service adapters]
-    end
-
-    %% Application-internal edges
-    GATEWAY --> CORE
-    SCHED --> CORE
-    CORE ==>|drives| REC
-
-    %% Service adapter edges
-    GATEWAY --> CHAN
-    CORE --> LLM
-    DREAM --> LLM
-
-    %% Identity reads at the edges
-    GATEWAY --> ID
-    TOOL --> ID
-    PERSONA--> ID
-
-    %% Application to data access
-    CORE --> REG
-    CORE --> MEM
-    GATEWAY --> CHQ
-    REC --> SIG
-    DREAM --> SIG
-    DREAM --> MEM
-    DREAM --> PROP
-    DREAM --> REG
-    TOOL --> PROP
-    TOOL --> REG
-    PERSONA--> PROP
-    PERSONA--> PA
-    BOOT --> CFG
-    BOOT --> ID
-
-    %% Health reads daemon liveness/heartbeat state
-    HEALTH -.reads liveness.-> GATEWAY
-    HEALTH -.reads liveness.-> SCHED
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/module-catalog.svg" alt="Module relationship diagram">
+  <figcaption>Module relationships. <a href="diagrams/module-catalog.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <p>Four relationships in this diagram carry invariants worth naming. <strong>Channel gateway ↔ Channel queue</strong> is the durable handoff between external channel I/O and Typhoon Way's agent loop; inside the gateway, the edge loop never calls core and the worker loop never talks to Telegram directly. <strong>Core ⇒ Signal recorder</strong> is the only edge into the recorder; nothing else writes to the signal store. <strong>Dream → Proposal queue</strong> and <strong>Tool manager → Proposal queue / Tool registry</strong> are sequential in the lifecycle — dream writes a proposal, the tool manager later submits forge output and, on approval, creates or updates the registry. They never race because dream is single-writer (enforced by the <code>dream_runs</code> lease row) and the tool manager runs only on admin action. <strong>Tool manager → Tool registry</strong> and <strong>Persona manager → Persona attributes</strong> are the two atomic-mutation edges; both are wrapped in transactions that span the corresponding Proposal queue update.</p>
 
@@ -487,235 +341,45 @@ flowchart TB
 
 <h5>Channel edge delivery</h5>
 
-<div class="mermaid">
-sequenceDiagram
-    participant Telegram as Telegram service
-    participant Adapter as Telegram adapter
-    participant Edge as Gateway edge loop
-    participant Queue as Channel queue
-
-    Edge->>Adapter: poll_updates(channel_id, cursor)
-    Adapter->>Telegram: getUpdates(bot_token, offset)
-    Telegram-->>Adapter: telegram_updates
-    Adapter-->>Edge: channel_updates(channel_id, bot_account_id, peer_id, update_id, payload)
-    Edge->>Queue: enqueue_inbound(update_id, channel_update)
-    Queue-->>Edge: enqueued_or_duplicate
-    Edge->>Queue: claim_outbound(gateway_id, lease_ttl)
-    alt outbound ready
-      Queue-->>Edge: outbound_message(channel_id, peer_id, reply)
-      Edge->>Adapter: post_message(channel_id, peer_id, reply)
-      Adapter->>Telegram: sendMessage(chat_id, reply)
-      Telegram-->>Adapter: send_result(message_id)
-      Adapter-->>Edge: delivery_result(message_id)
-      Edge->>Queue: mark_outbound_delivered(outbound_id, provider_message_id)
-    else no outbound ready
-      Queue-->>Edge: none
-    end
-    Note over Edge,Queue: Edge loop owns external channel IO only and never resolves identity or calls core.
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/seq-edge-delivery.svg" alt="Channel edge delivery sequence diagram">
+  <figcaption>Channel edge delivery. <a href="diagrams/seq-edge-delivery.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <h5>Queued gateway worker turn</h5>
 
-<div class="mermaid">
-sequenceDiagram
-    participant Queue as Channel queue
-    participant Worker as Gateway worker loop
-    participant Identity as Identity and persona resolution
-    participant Core as Core dispatcher
-    participant Data as Data-access APIs
-    participant LLMAdapter as LLM adapter
-    participant LLM as LLM service
-    participant Tool as Tool subprocess
-    participant Recorder as Signal recorder
-
-    Worker->>Queue: claim_inbound(gateway_id, lease_ttl)
-    alt inbound ready
-      Queue-->>Worker: inbound_message(channel_id, bot_account_id, peer_id, text, attachments)
-      Worker->>Identity: resolve(channel, bot_account_id, peer_id)
-      alt bound peer
-        Identity-->>Worker: (user_id, persona_slug)
-        Worker->>Core: dispatch(invocation, persona_slug)
-        Core->>Data: query_memory(persona_slug, request)
-        Data-->>Core: memory_context
-        Core->>Data: load_active_tool_manifest(persona_slug, budget)
-        Data-->>Core: tool_manifest(from_reviewed_tool_md)
-        loop until final model turn
-          Core->>LLMAdapter: complete(prompt, memory_context, tool_manifest)
-          LLMAdapter->>LLM: provider_request(messages, tools)
-          LLM-->>LLMAdapter: provider_response(content, tool_calls)
-          LLMAdapter-->>Core: model_turn(content, tool_calls)
-          opt LLM requested tool call
-            Core->>Tool: execute_requested_tool(tool_name, args, env)
-            Tool-->>Core: tool_result(exit_code, stdout, stderr)
-          end
-        end
-        Core->>Recorder: record_signal(invocation, result, success_tags)
-        Recorder->>Data: insert_signal(persona_slug, signal)
-        Core-->>Worker: dispatch_result(reply)
-        Worker->>Queue: enqueue_outbound(channel_id, peer_id, reply)
-        Worker->>Queue: ack_inbound(message_id)
-      else unbound peer
-        Identity-->>Worker: binding_missing
-        Worker->>Queue: mark_inbound_dead_letter(message_id, binding_missing)
-      end
-    else no inbound ready
-      Queue-->>Worker: none
-    end
-    Note over Queue,Worker: Durable queue decouples external channel availability from Typhoon Way's agent loop.
-    Note over Worker,Recorder: Core is the only caller that drives signal recording.
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/seq-queued-turn.svg" alt="Queued gateway worker turn sequence diagram">
+  <figcaption>Queued gateway worker turn. <a href="diagrams/seq-queued-turn.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <h5>Scheduled execution</h5>
 
-<div class="mermaid">
-sequenceDiagram
-    participant Cron as Scheduler
-    participant Core as Core dispatcher
-    participant Dream as Dream batch
-    participant Tool as Configured tool
-    participant Recorder as Signal recorder
-    participant Data as Data-access APIs
-
-    Cron->>Data: load_due_entries(now)
-    Data-->>Cron: due_entries
-    alt use-plane entry
-      Cron->>Core: dispatch(scheduled_invocation, persona_slug)
-      Core->>Tool: execute(tool_name, args, env)
-      Tool-->>Core: tool_result(exit_code, stdout, stderr)
-      Core->>Recorder: record_signal(invocation, result, success_tags)
-      Recorder->>Data: insert_signal(persona_slug, signal)
-    else management entry
-      Cron->>Dream: run_dream(reason=scheduled)
-      Dream-->>Cron: dream_exit(status)
-    end
-    Cron->>Data: mark_schedule_attempt(entry_id, status)
-    Note over Cron,Recorder: Only the use-plane branch records a signal.
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/seq-scheduled.svg" alt="Scheduled execution sequence diagram">
+  <figcaption>Scheduled execution. <a href="diagrams/seq-scheduled.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <h5>Dream batch</h5>
 
-<div class="mermaid">
-sequenceDiagram
-    participant Trigger as Operator or scheduler
-    participant Dream as Dream batch
-    participant Lease as dream_runs lease (S5)
-    participant Data as Data-access APIs
-    participant LLMAdapter as LLM adapter
-    participant LLM as LLM service
-
-    Trigger->>Dream: run_dream(reason)
-    Dream->>Lease: acquire_or_start()
-    alt fresh live run exists
-      Lease-->>Dream: live_run(run_id, phase, elapsed, eta)
-      Dream-->>Trigger: status_report (TTY: exit 0; non-TTY: exit non-zero)
-    else no live row, or stale row closed
-      Lease->>Lease: if stale, mark old row timed_out; insert new run row
-      Lease-->>Dream: lease_acquired(run_id, deadline_at)
-      Note over Dream,Lease: Stale process writes are ignored unless run_id still owns the live row.
-      Note over Dream,Lease: Heartbeat task ticks last_heartbeat_at every dream.heartbeat_interval_seconds.
-      Dream->>Lease: set_phase(light)
-      Dream->>Data: read_recent_signals(window)
-      Data-->>Dream: signal_batch
-      Dream->>Lease: poll_cancel()
-      Lease-->>Dream: not_cancelled
-      Dream->>Lease: set_phase(rem)
-      Dream->>Data: read_memory_context(bounds)
-      Data-->>Dream: memory_context
-      Dream->>Lease: poll_cancel()
-      Lease-->>Dream: not_cancelled
-      Dream->>Lease: set_phase(deep)
-      loop deep-phase chunks
-        Dream->>Lease: poll_cancel_and_deadline()
-        Lease-->>Dream: not_cancelled(remaining_runtime)
-        Dream->>LLMAdapter: analyze(chunk, timeout=remaining_runtime)
-        LLMAdapter->>LLM: provider_request(messages)
-        alt provider returns before deadline
-          LLM-->>LLMAdapter: provider_response(findings)
-          LLMAdapter-->>Dream: findings
-          Dream->>Data: upsert_memories(findings.memories)
-          Dream->>Data: enqueue_cli_proposals(findings.forge_briefs)
-          Dream->>Data: enqueue_persona_proposals(findings.persona_briefs)
-          Dream->>Lease: poll_cancel()
-        else deadline expires
-          LLMAdapter-->>Dream: timeout
-          Dream->>Lease: terminate(timed_out)
-          Dream-->>Trigger: dream_exit(timed_out)
-        end
-        alt cancel observed after completed chunk
-          Note over Dream,Data: Persisted-so-far drafts stay; abandon remaining chunks.
-          Dream->>Lease: terminate(cancelled)
-          Dream-->>Trigger: dream_exit(cancelled)
-        end
-      end
-      Dream->>Lease: set_phase(prune)
-      Dream->>Data: delete_stale_signals(prune_window)
-      Dream->>Lease: terminate(succeeded, phase_durations)
-      Note over Lease: phase_durations update the EWMA used by typhoon dream status ETA.
-      Dream-->>Trigger: dream_exit(success)
-    end
-    Note over Dream,Data: Dream proposes new work. Ratification remains outside dream.
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/seq-dream.svg" alt="Dream batch sequence diagram">
+  <figcaption>Dream batch. <a href="diagrams/seq-dream.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <h5>Registry mutation</h5>
 
-<div class="mermaid">
-sequenceDiagram
-    participant Operator as Operator (admin user)
-    participant Manager as Tool manager
-    participant Identity as Identity and persona resolution
-    participant Queue as Proposal queue
-    participant Registry as Tool registry
-    participant Memory as Memory store
-    participant FS as Filesystem
-
-    Operator->>Manager: approve_tool(proposal_id)
-    Manager->>Identity: assert_admin(user_id)
-    Identity-->>Manager: role_ok
-    Manager->>Registry: begin_immediate()
-    Manager->>Queue: load_proposal_for_update(proposal_id)
-    Queue-->>Manager: proposal(requirements, artifact, checksum)
-    Manager->>FS: lock_tool(tool_name)
-    Manager->>FS: write_staging(tool_name, bytes)
-    Manager->>FS: verify_checksum(staging_path, checksum)
-    Manager->>Registry: insert_or_update_active_tool(tool_name, checksum)
-    Manager->>Memory: write_seed_memory(tool_name, usage)
-    Manager->>Queue: mark_approved(proposal_id)
-    Manager->>FS: atomic_rename(staging_path, active_path)
-    Note over Manager,FS: Rename happens before commit so the active DB row never references a missing file.
-    alt commit succeeds
-      Manager->>Registry: commit()
-      Manager->>FS: unlock_tool(tool_name)
-      Manager-->>Operator: approval_result(tool_name, checksum)
-    else step before commit or commit fails
-      Manager->>Registry: rollback()
-      Manager->>FS: remove_staging_or_final(tool_name, checksum)
-      Manager->>FS: unlock_tool(tool_name)
-      Manager-->>Operator: approval_failed(error)
-    end
-    Note over Registry,Queue: BEGIN IMMEDIATE spans registry, reviewed tool.md, seed memory, and proposal status writes.
-    Note over Manager,FS: DB is source of truth. Crash leftovers are repaired by tool sync.
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/seq-registry-mutation.svg" alt="Registry mutation sequence diagram">
+  <figcaption>Registry mutation. <a href="diagrams/seq-registry-mutation.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <h5>Health inspection</h5>
 
-<div class="mermaid">
-sequenceDiagram
-    participant Operator as Operator
-    participant Health as Health inspector
-    participant Data as Data-access APIs
-
-    Operator->>Health: health()
-    Health->>Data: read_daemon_state(channel_gateway, scheduler)
-    Data-->>Health: liveness_and_heartbeat
-    Health->>Data: read_channel_queue_stats()
-    Data-->>Health: backlog_and_oldest_age
-    Health->>Data: measure_db_latency()
-    Data-->>Health: db_latency
-    Health->>Data: read_recent_recorder_and_dream_status()
-    Data-->>Health: recent_status
-    Health-->>Operator: health_report(status, details)
-    Note over Health,Data: Health is read-only and creates no daemon state for one-shot CLIs.
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/seq-health.svg" alt="Health inspection sequence diagram">
+  <figcaption>Health inspection. <a href="diagrams/seq-health.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <h4>Process-view verification checklist</h4>
 
@@ -820,21 +484,10 @@ sequenceDiagram
 
 <p>Almost every cross-subsystem dependency goes through S5. S2 and S4 produce mutations; S3 produces and consumes; S1 reads health. S5 is the lower access point — that is the point of having a data-access and adapters subsystem.</p>
 
-<div class="mermaid">
-flowchart TB
-    S1[S1 — Platform<br/>Bootstrap, Health]
-    S2[S2 — Channels &amp; Dispatch<br/>Gateway, Endpoints,<br/>Scheduler, Core, Recorder]
-    S3[S3 — Self-growth<br/>Dream cycle]
-    S4[S4 — Registry management<br/>Tool manager, Persona manager]
-    S5[S5 — Data access &amp; adapters<br/>typed APIs + service adapters]
-
-    S1 --> S5
-    S2 --> S5
-    S3 --> S5
-    S4 --> S5
-
-    S1 -.observes daemons.-> S2
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/subsystem-deps.svg" alt="Subsystem dependency diagram">
+  <figcaption>Subsystem dependencies. <a href="diagrams/subsystem-deps.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <h4>Why this partitioning</h4>
 
@@ -932,38 +585,10 @@ flowchart TB
 
 <p>The tool proposal moves through a small linear state space. Approval emits a registry mutation and closes the proposal in the same database transaction; any binary install or archival follows the registry mutation protocol from §2.3. Rejection is the only branch that can recur; after the third rejection on the same pattern, dream is forbidden from drafting another proposal that originates from the same signal cluster.</p>
 
-<div class="mermaid">
-stateDiagram-v2
-    [*] --> awaiting_forge : dream creates proposal brief
-    awaiting_forge --> awaiting_user : tool propose submit [requirements + tool.md + source + path lint pass]
-    awaiting_forge --> awaiting_forge : tool propose submit [path lint fails]
-    awaiting_user --> approved : tool propose approve
-    awaiting_user --> rejected : tool propose reject
-    approved --> [*]
-    rejected --> [*] : rejection_count < 3
-    rejected --> [*] : rejection_count = 3 (pattern blacklisted)
-
-    note right of awaiting_user
-        On submit: attach hardened
-        requirement, tool.md, source, optional tests,
-        dependencies, and correctness argument.
-    end note
-
-    note right of approved
-        DB transaction:
-        registry insert + reviewed tool.md
-        + seed memory
-        + proposal status flip.
-        Binary install follows
-        registry mutation protocol.
-    end note
-
-    note left of rejected
-        Blacklist is enforced as a
-        dream-side guard (count check
-        before drafting), not as a state.
-    end note
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/state-proposal.svg" alt="Tool proposal status state diagram">
+  <figcaption>Tool proposal status. <a href="diagrams/state-proposal.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <p><strong>Invariants enforced by this machine:</strong></p>
 <ul>
@@ -978,56 +603,10 @@ stateDiagram-v2
 
 <p>Once a proposal is approved, the tool itself enters a lifecycle covering installation, deactivation, replacement, deprecation, and removal. Every transition that touches a binary on disk follows the registry mutation protocol; every transition that affects more than one database row is a single SQL transaction.</p>
 
-<div class="mermaid">
-stateDiagram-v2
-    [*] --> active : tool propose approve
-    [*] --> active : tool promote
-    active --> disabled : tool disable
-    disabled --> active : tool enable
-    active --> superseded : tool propose approve [replacement]
-    active --> active : tool rollback
-    active --> deleted : tool delete
-    disabled --> deleted : tool delete
-    superseded --> deleted : tool delete
-    deleted --> [*] : tool purge
-
-    note right of active
-        Steady state. Use and success
-        counters increment here.
-        Dream may propose replacement
-        (rising error rate) or
-        deprecation (prolonged disuse).
-        tool rollback is a self-loop:
-        active version swaps with
-        a predecessor from .history/.
-    end note
-
-    note right of superseded
-        Atomic swap on approve:
-        predecessor moves to .history/,
-        new binary installed via
-        registry mutation protocol;
-        lineage, reviewed tool.md,
-        and seed memory updated.
-    end note
-
-    note left of deleted
-        Row retained for lineage
-        and tool history; binary
-        archived to .history/.
-        purge is the irreversible
-        terminal step that removes
-        the row and clears .history/.
-    end note
-
-    note right of [*]
-        Filesystem leftovers may persist
-        if a process crashes during install.
-        The DB registry row and checksum are
-        source of truth; tool sync removes or
-        surfaces mismatches out of band.
-    end note
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/state-tool-lifecycle.svg" alt="Tool lifecycle state diagram">
+  <figcaption>Tool lifecycle. <a href="diagrams/state-tool-lifecycle.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <p><strong>Invariants enforced by this machine:</strong></p>
 <ul>
@@ -1042,28 +621,10 @@ stateDiagram-v2
 
 <p>Persona proposals govern per-persona attribute-column mutations on persona-core's <code>persona</code> row, originating from dream. The shape of the machine is the same as §3.1's tail: a single approval branch, a recurring rejection branch with the same 3-strike rule (here keyed per <code>(persona_slug, attribute_column)</code> — the rule is per persona, so one persona rejecting a heuristics change three times does not blacklist heuristics changes for other personas). There is no forge step because the artifact is a value to set on a column, not a binary; therefore no <code>awaiting_forge</code>.</p>
 
-<div class="mermaid">
-stateDiagram-v2
-    [*] --> pending : dream creates proposal
-    pending --> approved : persona approve
-    pending --> rejected : persona reject
-    approved --> [*]
-    rejected --> [*] : rejection_count < 3
-    rejected --> [*] : rejection_count = 3 (column blacklisted)
-
-    note right of approved
-        Atomic transaction:
-        persona row attribute-column
-        update + status flip in one step.
-    end note
-
-    note left of rejected
-        Blacklist is per
-        (persona_slug, attribute_column)
-        and enforced as a dream-side
-        guard, not a state.
-    end note
-</div>
+<figure class="diagram">
+  <img src="diagrams/svg/state-persona-proposal.svg" alt="Persona proposal status state diagram">
+  <figcaption>Persona proposal status. <a href="diagrams/state-persona-proposal.mmd">Mermaid source</a>.</figcaption>
+</figure>
 
 <p><strong>Invariants enforced by this machine:</strong></p>
 <ul>

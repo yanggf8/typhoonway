@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant Operator as Operator
+    participant Health as Health inspector
+    participant Data as Data-access APIs
+
+    Operator->>Health: health()
+    Health->>Data: read_daemon_state(channel_gateway, scheduler)
+    Data-->>Health: liveness_and_heartbeat
+    Health->>Data: read_channel_queue_stats()
+    Data-->>Health: backlog_and_oldest_age
+    Health->>Data: measure_db_latency()
+    Data-->>Health: db_latency
+    Health->>Data: read_recent_recorder_and_dream_status()
+    Data-->>Health: recent_status
+    Health-->>Operator: health_report(status, details)
+    Note over Health,Data: Health is read-only and creates no daemon state for one-shot CLIs.

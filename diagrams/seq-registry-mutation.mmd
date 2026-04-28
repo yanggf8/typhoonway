@@ -1,0 +1,35 @@
+sequenceDiagram
+    participant Operator as Operator (admin user)
+    participant Manager as Tool manager
+    participant Identity as Identity and persona resolution
+    participant Queue as Proposal queue
+    participant Registry as Tool registry
+    participant Memory as Memory store
+    participant FS as Filesystem
+
+    Operator->>Manager: approve_tool(proposal_id)
+    Manager->>Identity: assert_admin(user_id)
+    Identity-->>Manager: role_ok
+    Manager->>Registry: begin_immediate()
+    Manager->>Queue: load_proposal_for_update(proposal_id)
+    Queue-->>Manager: proposal(requirements, artifact, checksum)
+    Manager->>FS: lock_tool(tool_name)
+    Manager->>FS: write_staging(tool_name, bytes)
+    Manager->>FS: verify_checksum(staging_path, checksum)
+    Manager->>Registry: insert_or_update_active_tool(tool_name, checksum)
+    Manager->>Memory: write_seed_memory(tool_name, usage)
+    Manager->>Queue: mark_approved(proposal_id)
+    Manager->>FS: atomic_rename(staging_path, active_path)
+    Note over Manager,FS: Rename happens before commit so the active DB row never references a missing file.
+    alt commit succeeds
+      Manager->>Registry: commit()
+      Manager->>FS: unlock_tool(tool_name)
+      Manager-->>Operator: approval_result(tool_name, checksum)
+    else step before commit or commit fails
+      Manager->>Registry: rollback()
+      Manager->>FS: remove_staging_or_final(tool_name, checksum)
+      Manager->>FS: unlock_tool(tool_name)
+      Manager-->>Operator: approval_failed(error)
+    end
+    Note over Registry,Queue: BEGIN IMMEDIATE spans registry, reviewed tool.md, seed memory, and proposal status writes.
+    Note over Manager,FS: DB is source of truth. Crash leftovers are repaired by tool sync.

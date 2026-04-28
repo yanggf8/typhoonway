@@ -1,0 +1,84 @@
+flowchart TB
+    OP([Operator])
+    USERS([Users<br/><i>via channel binding</i>])
+
+    subgraph Channels[" "]
+      direction LR
+      TG[Telegram bot]
+      EXT["External agent CLI<br/>Claude Code, Cursor, Codex<br/><i>operator only in v0.1</i>"]
+    end
+
+    subgraph Typhoon["Typhoon — one binary, two planes"]
+      direction TB
+
+      subgraph UsePlane["Use plane — routes through core, records signals"]
+        direction TB
+
+        subgraph ChannelPath["typhoon gateway — edge loop + worker loop"]
+          direction LR
+          EDGE["<b>gateway edge loop</b><br/>Telegram-facing<br/><i>adapter + queue only</i>"]
+          WORKER["<b>gateway worker loop</b><br/>Typhoon Way agent loop<br/><i>queue consumer; invokes core</i>"]
+        end
+
+        CORE{{"<b>Typhoon core</b><br/>dispatcher<br/><i>master path for every use;<br/>sole driver of the recorder</i>"}}
+        REC[/"<b>Signal recorder</b><br/><i>sole writer to the signal store;<br/>driven only by core</i>"/]
+      end
+
+      CRON["<b>typhoon cron</b><br/>general scheduler<br/><i>use targets via core;<br/>management targets direct</i>"]
+
+      subgraph MgmtPlane["Management plane — bypasses core, no signals"]
+        direction TB
+        TOOLMGR["<b>typhoon tool — tool manager</b><br/><b>ingest:</b> propose list / show / submit /<br/>approve / reject<br/><b>operate:</b> list / show / diff / history /<br/>disable / enable / rollback /<br/>delete / purge / promote / sync"]
+        DREAM["<b>typhoon dream</b><br/><i>standalone batch; lease row in dream_runs.<br/>Reads signals, writes proposals + memories.<br/>status / cancel via dream_runs</i>"]
+        HEALTH["<b>typhoon health</b><br/><i>reports gateway/cron<br/>daemon liveness</i>"]
+      end
+    end
+
+    subgraph LLMs[" "]
+      direction LR
+      OLLM["Frontier LLM<br/><i>queued gateway-worker path only</i>"]
+      DLLM[Dream LLM<br/>cheap batch]
+    end
+
+    subgraph State["Shared state"]
+      direction LR
+      DB[(TursoDB cloud DB<br/><i>required state store</i>)]
+      CHQ[(Channel queue rows<br/><i>Turso inbox / outbox</i>)]
+      FS["Filesystem<br/>~/.typhoon/bin<br/>.history/"]
+    end
+
+    FORGE["Forge workflow<br/>manual v0.1;<br/>CLI-assisted later"]
+
+    OP <--> TG
+    OP <--> EXT
+    USERS <--> TG
+    OP --> TOOLMGR
+    OP --> DREAM
+    OP -.->|drives externally| FORGE
+    FORGE -.->|requirements + tool.md + source + tests + correctness argument| OP
+    FORGE -.->|via operator: tool propose submit| TOOLMGR
+
+    TG <--> EDGE
+    EDGE <--> CHQ
+    WORKER <--> CHQ
+    CHQ -.->|tables in| DB
+    WORKER --> CORE
+    EXT -->|typhoon signal record / memory query| CORE
+    CRON -->|use targets| CORE
+
+    CORE <-->|prompts + tool-call loop| OLLM
+    CORE -->|execute requested tools on PATH| FS
+    CORE -->|memory reads| DB
+    CORE ==>|tells recorder to record| REC
+    REC ==>|writes signals| DB
+
+    CRON -.->|spawns management target| DREAM
+
+    DREAM <-->|proposal brief drafting| DLLM
+    DREAM -->|writes proposal briefs: awaiting_forge| TOOLMGR
+    DREAM <--> DB
+    TOOLMGR <--> DB
+    TOOLMGR <--> FS
+
+    HEALTH -.->|reads gateway liveness| EDGE
+    HEALTH -.->|reads liveness| CRON

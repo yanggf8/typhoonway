@@ -1,0 +1,20 @@
+stateDiagram-v2
+    [*] --> pending : dream creates proposal
+    pending --> approved : persona approve
+    pending --> rejected : persona reject
+    approved --> [*]
+    rejected --> [*] : rejection_count < 3
+    rejected --> [*] : rejection_count = 3 (column blacklisted)
+
+    note right of approved
+        Atomic transaction:
+        persona row attribute-column
+        update + status flip in one step.
+    end note
+
+    note left of rejected
+        Blacklist is per
+        (persona_slug, attribute_column)
+        and enforced as a dream-side
+        guard, not a state.
+    end note

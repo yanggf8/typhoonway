@@ -1,0 +1,59 @@
+sequenceDiagram
+    participant Trigger as Operator or scheduler
+    participant Dream as Dream batch
+    participant Lease as dream_runs lease (S5)
+    participant Data as Data-access APIs
+    participant LLMAdapter as LLM adapter
+    participant LLM as LLM service
+
+    Trigger->>Dream: run_dream(reason)
+    Dream->>Lease: acquire_or_start()
+    alt fresh live run exists
+      Lease-->>Dream: live_run(run_id, phase, elapsed, eta)
+      Dream-->>Trigger: status_report, TTY exit 0, non-TTY exit non-zero
+    else no live row, or stale row closed
+      Lease->>Lease: if stale, mark old row timed_out and insert new run row
+      Lease-->>Dream: lease_acquired(run_id, deadline_at)
+      Note over Dream,Lease: Stale process writes are ignored unless run_id still owns the live row.
+      Note over Dream,Lease: Heartbeat task ticks last_heartbeat_at every dream.heartbeat_interval_seconds.
+      Dream->>Lease: set_phase(light)
+      Dream->>Data: read_recent_signals(window)
+      Data-->>Dream: signal_batch
+      Dream->>Lease: poll_cancel()
+      Lease-->>Dream: not_cancelled
+      Dream->>Lease: set_phase(rem)
+      Dream->>Data: read_memory_context(bounds)
+      Data-->>Dream: memory_context
+      Dream->>Lease: poll_cancel()
+      Lease-->>Dream: not_cancelled
+      Dream->>Lease: set_phase(deep)
+      loop deep-phase chunks
+        Dream->>Lease: poll_cancel_and_deadline()
+        Lease-->>Dream: not_cancelled(remaining_runtime)
+        Dream->>LLMAdapter: analyze(chunk, timeout=remaining_runtime)
+        LLMAdapter->>LLM: provider_request(messages)
+        alt provider returns before deadline
+          LLM-->>LLMAdapter: provider_response(findings)
+          LLMAdapter-->>Dream: findings
+          Dream->>Data: upsert_memories(findings.memories)
+          Dream->>Data: enqueue_cli_proposals(findings.forge_briefs)
+          Dream->>Data: enqueue_persona_proposals(findings.persona_briefs)
+          Dream->>Lease: poll_cancel()
+        else deadline expires
+          LLMAdapter-->>Dream: timeout
+          Dream->>Lease: terminate(timed_out)
+          Dream-->>Trigger: dream_exit(timed_out)
+        end
+        alt cancel observed after completed chunk
+          Note over Dream,Data: Persisted-so-far drafts stay and remaining chunks are abandoned.
+          Dream->>Lease: terminate(cancelled)
+          Dream-->>Trigger: dream_exit(cancelled)
+        end
+      end
+      Dream->>Lease: set_phase(prune)
+      Dream->>Data: delete_stale_signals(prune_window)
+      Dream->>Lease: terminate(succeeded, phase_durations)
+      Note over Lease: phase_durations update the EWMA used by typhoon dream status ETA.
+      Dream-->>Trigger: dream_exit(success)
+    end
+    Note over Dream,Data: Dream proposes new work. Ratification remains outside dream.

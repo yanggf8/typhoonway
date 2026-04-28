@@ -1,0 +1,30 @@
+stateDiagram-v2
+    [*] --> awaiting_forge : dream creates proposal brief
+    awaiting_forge --> awaiting_user : tool propose submit [requirements + tool.md + source + path lint pass]
+    awaiting_forge --> awaiting_forge : tool propose submit [path lint fails]
+    awaiting_user --> approved : tool propose approve
+    awaiting_user --> rejected : tool propose reject
+    approved --> [*]
+    rejected --> [*] : rejection_count < 3
+    rejected --> [*] : rejection_count = 3 (pattern blacklisted)
+
+    note right of awaiting_user
+        On submit: attach hardened
+        requirement, tool.md, source, optional tests,
+        dependencies, and correctness argument.
+    end note
+
+    note right of approved
+        DB transaction:
+        registry insert + reviewed tool.md
+        + seed memory
+        + proposal status flip.
+        Binary install follows
+        registry mutation protocol.
+    end note
+
+    note left of rejected
+        Blacklist is enforced as a
+        dream-side guard (count check
+        before drafting), not as a state.
+    end note
