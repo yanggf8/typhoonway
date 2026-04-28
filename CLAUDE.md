@@ -39,7 +39,7 @@ Authoritative list in HLD §2.2 catalog and PROPOSAL §"CLI Commands". Key surfa
 
 ```
 typhoon init --url URL --token TOK   # Schema migrations + seed operator (idempotent)
-typhoon gateway --telegram           # Long-poll daemon
+typhoon gateway                      # Channel daemon; Telegram adapter in v0.1
 typhoon cron                         # Scheduler daemon
 typhoon dream                        # File-locked batch
 typhoon tool {propose,list,show,diff,history,disable,enable,

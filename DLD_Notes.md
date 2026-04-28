@@ -109,7 +109,7 @@ These don't need to be settled before drafting starts but should be tracked:
 
 1. **Async runtime per process.** v0.1 daemons (gateway, scheduler) need full Tokio; one-shot CLIs may run on `current_thread` Tokio or a `block_on` bridge. DLD picks per-process, given the libSQL client's async surface.
 2. **Sandbox mechanism.** Forged tool execution sandbox specifics (bwrap config, seccomp filters, resource limits, AppArmor/SELinux interaction). HLD does not commit; PLAN §8 lists this as deferred.
-3. **Telegram execution permissions.** v0.1 default: forged CLI runs with same privileges as REPL. DLD confirms or revises.
+3. **Forged tool execution permissions.** v0.1 default: forged CLI runs with the same privileges as the invoking Typhoon process — typically the channel gateway daemon when invoked from a channel turn, or the operator's shell when invoked manually. DLD confirms or revises.
 4. **Success-tagging edge cases.** What counts as a "correction"? PLAN §8 R8 flagged abandoned tasks as a false-positive risk. DLD specifies the rule.
 5. **Retrieval budget knobs.** Exact `top_k`, similarity threshold, per-turn token budget. PLAN §8 lists as placeholders to tune in first two weeks.
 6. **Replacement similarity thresholds.** Dream's "is this proposal a replacement for an existing tool?" decision; threshold values.
