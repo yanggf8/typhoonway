@@ -18,7 +18,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - Signal capture: tool calls, corrections, outcomes, session boundaries, success tagging
 - Dream cycle (light / REM / deep) — organizes signals and writes **proposal briefs**, not requirements and not code
 - Memory extraction (mem0-style) inside the dream cycle; bounded retrieval (Top-K + similarity)
-- Operator hand-off: `typhoon tool propose submit <id> --requirements <file> --source <file> [--tests <file>]`
+- Operator hand-off: `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]`
 - Hardcoded-path lint (cross-platform, regex)
 - Atomic approve / install / rollback via `.history/`
 - CLI lifecycle management (list, show, disable, enable, rollback, delete, purge, promote, check-deps)
@@ -67,7 +67,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W11 | REM phase — cluster successful chains, detect repeats, collision check | W8, W6 | Clusters emerge from seeded signals | M |
 | W12 | DEEP phase — organize clustered signals into proposal briefs (problem / repeated workflow / likely interface sketch / rough acceptance hints / rough tier / evidence / ROI) | W11 | `awaiting_forge` proposal brief row appears | L |
 | W13 | Persona proposal flow | W8 | Persona-attribute changes routed through approval queue | S |
-| W14 | `typhoon tool propose submit <id> --requirements <file> --source <file> [--tests <file>]` | W12 | Operator can hand hardened requirement + source back | M |
+| W14 | `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]` | W12 | Operator can hand hardened requirement + LLM-facing tool descriptor + source back | M |
 | W15 | Hardcoded-path lint | W14 | Obvious absolute paths rejected | S |
 | W16 | Atomic approve (binary + registry + seed memory in one tx) | W14, W15 | Approve is all-or-nothing | M |
 | W17 | CLI lifecycle commands — list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps | W16 | Full management surface | M |
@@ -192,16 +192,16 @@ Each test case is a command (or short script) with an observable pass criterion.
 
 | ID | What runs | Pass criterion |
 |---|---|---|
-| TC-M5-01 | `typhoon tool propose submit <id> --requirements req.md --source cli.sh --tests test.sh` | Proposal stores hardened requirement + source + tests and flips `awaiting_forge → awaiting_user` |
-| TC-M5-02 | Submit source without `--requirements` | Exit ≠ 0; proposal remains `awaiting_forge` |
+| TC-M5-01 | `typhoon tool propose submit <id> --requirements req.md --tool-doc tool.md --source cli.sh --tests test.sh` | Proposal stores hardened requirement + `tool.md` + source + tests and flips `awaiting_forge → awaiting_user` |
+| TC-M5-02 | Submit source without `--requirements` or `--tool-doc` | Exit ≠ 0; proposal remains `awaiting_forge` |
 | TC-M5-03 | Submit source containing `/home/yanggf/project` | Exit ≠ 0; lint rejects hardcoded path |
-| TC-M5-04 | `typhoon tool propose approve <id>` on clean proposal | Binary in `~/.typhoon/bin/<name>`; `cli_artifacts` row; seed memory written — all in one transaction |
+| TC-M5-04 | `typhoon tool propose approve <id>` on clean proposal | Binary in `~/.typhoon/bin/<name>`; `tool.md` in registry/artifact metadata; `cli_artifacts` row; seed memory written — all in one transaction |
 | TC-M5-05 | Approve where binary write fails (inject fault) | No partial state: no registry row, no memory, no binary |
 | TC-M5-06 | `typhoon tool disable foo` | Binary removed from PATH; registry row retained with `status='disabled'` |
 | TC-M5-07 | `typhoon tool rollback foo` after replacement | Previous version restored from `.history/`; current version archived |
 | TC-M5-08 | Approve replacement proposal | Old binary → `.history/<name>.<ts>`; new binary active; registry lineage updated; all atomic |
 | TC-M5-09 | Reject same pattern 3 times | Fourth dream run produces no proposal for that pattern |
-| TC-M5-10 | `typhoon tool promote /usr/local/bin/myscript` | Registry row created with `approved_by='user'`, no origin proposal |
+| TC-M5-10 | `typhoon tool promote /usr/local/bin/myscript --tool-doc tool.md` | Registry row created with `approved_by='user'`, reviewed `tool.md`, no origin proposal |
 | TC-M5-11 | `typhoon tool check-deps` with a CLI needing missing `jq` | Warns; install path would block if attempted |
 
 ### 5.6 M6 — Autonomous cadence
@@ -284,7 +284,7 @@ These are design-doc concerns, not plan concerns, but flagging so they don't amb
 6. **Success-tagging edge cases** — what counts as a "correction"? Regex match? LLM classifier? Explicit `/good` command? Affects W6.
 7. **Retrieval budget knobs** — exact `top_k`, similarity threshold, per-turn token budget. Affects W10.
 8. **Replacement similarity thresholds** — embedding similarity and signal-overlap cutoffs. Affects W18.
-9. **Forge delivery schema** — exact shape of the hardened requirement, correctness argument, dependency metadata, and tests submitted via `typhoon tool propose submit`. Affects W14.
+9. **Forge delivery schema** — exact shape of the hardened requirement, `tool.md`, correctness argument, dependency metadata, and tests submitted via `typhoon tool propose submit`. Affects W14.
 10. **Initial threshold values are placeholders.** `dream.min_frequency=5` and `dream.min_score=0.7` are guesses; expect to re-tune in the first two weeks of real signal capture. Not a design decision so much as an operating expectation — plan for the knobs to move.
 
 Each of these has a default "make something work" answer that unblocks the phase; the design doc picks the real answer.

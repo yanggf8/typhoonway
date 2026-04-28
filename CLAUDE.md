@@ -64,7 +64,7 @@ HLD.html §2 is authoritative. Mental model:
 
 - **Layer view (§2.1, matrix):** Presentation/interaction → Application/core → Integration (Service adapters | Data access) → Data store. Foundation and External services as side columns. External services attach only to Service adapters.
 - **Logical view (§2.2):** ~16 modules across Application and Integration layers, plus three adapter modules.
-- **Process view (§2.3):** Two long-running daemons (channel gateway, scheduler), one file-locked transient (dream), several one-shots. The gateway edge and worker loops are decoupled by a durable Turso-backed channel queue, not an in-memory channel. Seven sequence diagrams: channel edge delivery / queued gateway worker turn / external-agent / scheduled / dream / registry mutation / health.
+- **Process view (§2.3):** Two long-running daemons (channel gateway, scheduler), one file-locked transient (dream), several one-shots. The gateway edge and worker loops are decoupled by a durable Turso-backed channel queue, not an in-memory channel. Six sequence diagrams: channel edge delivery / queued gateway worker turn / scheduled / dream / registry mutation / health. The use-plane CLI subcommands (`typhoon signal record` / `typhoon memory query`) invoke Core directly through normal CLI dispatch and have no sequence diagram of their own.
 - **Subsystem view (§2.4):** S1–S5 partition; cross-subsystem coupling goes through S5.
 
 ## Non-Negotiable Invariants
