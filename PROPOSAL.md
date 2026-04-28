@@ -85,6 +85,19 @@ No skill registry. No system-prompt catalog. No agent-side install.
 
 Dream can run on a cheap batch model because it only writes proposal briefs. The operator handles forge work out-of-band with whichever coding agent gives the best requirement and code quality for that proposal. Online interaction touches the frontier LLM and the relevant memories — never a skill catalog.
 
+### Multiple users on one runtime
+
+A Typhoon runtime serves more than one person. The **operator** is the deploying party — seeded at `typhoon init`, the only role that ratifies proposals or mutates the tool registry. **Users** join later by binding a channel identity (a Telegram peer + bot account, today) to a stable internal ID. Users contribute signals, consume memory, and run installed tools; they cannot mutate the registry.
+
+Every person Typhoon knows about gets a **canonical user ID** — the stable internal identifier that survives across channels. "Multiple users" describes the system property (more than one person can interact with one Typhoon runtime); "canonical user" is the internal name for one of them. The distinction matters because a single person may eventually appear on multiple channels (Telegram today; Slack, Discord, web hooks later), and the canonical ID keeps their signals, memory, and per-user config tied together regardless of which channel delivered the message. Typhoon does not authenticate users itself — the channel does (Telegram authenticates the human via their Telegram account; the bot token authenticates the bot). Typhoon resolves the channel-delivered identity to a canonical user via a verified binding, then trusts it.
+
+What's per-user vs. shared:
+
+- **Shared.** The tool registry. When one user's signals motivate a tool, every user benefits once the operator approves. Tools are the artifact; sharing is the point.
+- **Per-user.** Signals, memory, and per-user config (`agent.tone` and similar). Tagged by canonical user ID; cross-user reads are a privacy bug. Dream is the deliberate exception — its scan reads across all users so cross-user pattern overlap can become evidence for a shared tool.
+
+v0.1 is single-channel (Telegram) plus the operator's external-agent channel (Claude Code, Cursor, Codex). The external-agent channel defaults to the operator's canonical user; an explicit `--user` flag is added when a second person uses that channel.
+
 ### What dream produces
 
 Three outputs, each with its own landing path:
