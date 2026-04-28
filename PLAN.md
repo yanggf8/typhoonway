@@ -24,9 +24,9 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - CLI lifecycle management (list, show, disable, enable, rollback, delete, purge, promote, check-deps)
 - Replacement flow with diff + atomic swap
 - 3-strike rejection tracking for both patterns and replacements
-- Soul proposals for config changes (always require approval)
+- Persona proposals for persona-attribute changes (always require approval)
 - Cron scheduler (`typhoon cron`) with `--catchup`
-- Telegram channel (`typhoon gateway --telegram`) — primary user interface
+- Channel gateway (`typhoon gateway`) with Telegram adapter — primary user interface in v0.1
 - Observability keepers: `typhoon health`, `typhoon dream stats`, per-CLI health metrics
 
 ### 1.2 Out of scope (v0.1)
@@ -66,7 +66,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W10 | Bounded retrieval (Top-K + similarity + scope) | W9 | `typhoon memory query` next-session shows relevant memories within budget | M |
 | W11 | REM phase — cluster successful chains, detect repeats, collision check | W8, W6 | Clusters emerge from seeded signals | M |
 | W12 | DEEP phase — organize clustered signals into proposal briefs (problem / repeated workflow / likely interface sketch / rough acceptance hints / rough tier / evidence / ROI) | W11 | `awaiting_forge` proposal brief row appears | L |
-| W13 | Soul proposal flow | W8 | Config changes routed through approval queue | S |
+| W13 | Persona proposal flow | W8 | Persona-attribute changes routed through approval queue | S |
 | W14 | `typhoon tool propose submit <id> --requirements <file> --source <file> [--tests <file>]` | W12 | Operator can hand hardened requirement + source back | M |
 | W15 | Hardcoded-path lint | W14 | Obvious absolute paths rejected | S |
 | W16 | Atomic approve (binary + registry + seed memory in one tx) | W14, W15 | Approve is all-or-nothing | M |
@@ -185,7 +185,7 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M4-02 | Seed 5 chains with `success=0` | No CLI proposal created |
 | TC-M4-03 | Seed 4 successful chains (below `min_frequency=5`) | No CLI proposal created |
 | TC-M4-04 | Pre-install CLI `foo`; seed signals overlapping `foo`'s origin | Proposal carries `replaces='foo'` |
-| TC-M4-05 | Seed config-pattern signals (user repeatedly changes `agent.tone`) | `soul_proposals` row appears |
+| TC-M4-05 | Seed persona-attribute pattern signals (user repeatedly edits a persona's `heuristics`) | `persona_proposals` row appears |
 | TC-M4-06 | Run `typhoon dream` concurrently from two shells | Second invocation exits ≠ 0 with lock error; first completes cleanly |
 
 ### 5.5 M5 — First CLI lives
@@ -267,7 +267,7 @@ These apply throughout the project. Each phase must not violate them. See `CLAUD
 5. **Skills are not a concept.** No `skills`, `skill_triggers`, or `skill_proposals` tables. No `typhoon skill *` commands. CLIs are the only artifact.
 6. **Typhoon does not write code.** Forge writes code; Typhoon writes proposal briefs and catalogs deliveries.
 7. **Typhoon does not verify correctness.** Hardcoded-path lint and metadata capture are the only submit-time checks Typhoon performs. Correctness is the forge's responsibility, accepted or rejected by the operator.
-8. **One runtime instance = one TursoDB database, serving multiple users.** One Typhoon runtime instance owns one TursoDB database. The same TursoDB database can help the operator work across machines for forge/review workflows, but a second Typhoon runtime writer instance is not supported. The single DB serves multiple canonical users (one operator seeded at init, plus users who join via channel binding); per-user data (signals, memory, per-user config slice) is scoped by `canonical_user_id`; tools are shared across all users; the operator role gates registry and tool mutations.
+8. **One runtime instance = one TursoDB database (shared with persona-core), serving multiple users with multiple personas.** Typhoon shares a TursoDB cloud database with persona-core. persona-core owns the `user` / `persona` / `audit_log` schema (migrations 001–006, schema-version row `('persona-core', N)`); Typhoon adds its own migrations on top (signal store, memory store, tool registry, proposal queues, daemon state; schema-version row `('typhoon', M)`). One Typhoon runtime instance owns one DB; the same DB can help admins work across machines for forge/review, but a second Typhoon runtime writer is not supported. The DB serves multiple users (auth-bearing humans, OAuth via persona-core — one admin seeded at init, plus authors who join via channel binding) and multiple personas (writer/agent identities owned by users; one user → many personas). Per-persona data (signals, memory, persona-attribute proposals) is scoped by `persona_slug`; tools are shared across all personas; the `role='admin'` user gate enforces ratification and tool-registry mutation; v0.1 maps one Telegram bot account to one persona.
 
 ---
 

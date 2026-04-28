@@ -32,7 +32,7 @@ No skill registry. No system-prompt catalog. No agent-side install.
 
 ## 3. How It Works
 
-**Dream is the analysis engine.** The loop has five roles: the runtime **does the work**, the recorder **persists signals**, dream **analyzes recorded signals and drafts a proposal brief**, the **operator forges** that brief into a high-quality requirement plus source out-of-band using an agentic coding workflow (Codex, Claude Code CLI, Cursor, or similar), and the **operator-as-user ratifies** by reviewing both.
+**Dream is the analysis engine.** The loop has five roles: the runtime **does the work**, the recorder **persists signals**, dream **analyzes recorded signals and drafts a proposal brief**, the **admin forges** that brief into a high-quality requirement plus source out-of-band using an agentic coding workflow (Codex, Claude Code CLI, Cursor, or similar), and the **admin ratifies** by reviewing both.
 
 **Typhoon doesn't verify correctness — the forge does.** A CLI forged from observed usage can't be mechanically proven reusable; signals are evidence of what happened, not a behavioral contract. Typhoon's role is to extract a *proposal brief* (problem, repeated workflow, evidence, likely interface, rough tier) and catalog the forge's delivery. The forge is responsible for hardening that brief into an implementable requirement, satisfying it with source, and producing a correctness argument (tests, examples, whatever fits). The operator accepts or rejects.
 
@@ -59,7 +59,7 @@ No skill registry. No system-prompt catalog. No agent-side install.
                           repeated workflow, likely interface, rough
                           tier claim, ROI, evidence) and writes
                           cli_proposals with status=awaiting_forge
-                          (or memories, or soul_proposals)
+                          (or memories, or persona_proposals)
                        │
                        ▼
     Operator forges the brief externally (Codex, Claude Code CLI,
@@ -85,18 +85,31 @@ No skill registry. No system-prompt catalog. No agent-side install.
 
 Dream can run on a cheap batch model because it only writes proposal briefs. The operator handles forge work out-of-band with whichever coding agent gives the best requirement and code quality for that proposal. Online interaction touches the frontier LLM and the relevant memories — never a skill catalog.
 
-### Multiple users on one runtime
+### Users and personas
 
-A Typhoon runtime serves more than one person. The **operator** is the deploying party — seeded at `typhoon init`, the only role that ratifies proposals or mutates the tool registry. **Users** join later by binding a channel identity (a Telegram peer + bot account, today) to a stable internal ID. Users contribute signals, consume memory, and run installed tools; they cannot mutate the registry.
+Typhoon does not invent its own identity model. It shares a TursoDB cloud database with **persona-core**, the existing schema authority for users and personas. persona-core owns migrations 001–006 (`user`, `invite`, `persona`, `persona_secret`, `persona_history`, `content_column`, `installment`, `stream`, `issue`, `audit_log`); Typhoon owns its own migrations on top (signal store, memory store, tool registry, proposal queues, daemon state). One database, two schema-versioning rows: `('persona-core', N)` and `('typhoon', M)`.
 
-Every person Typhoon knows about gets a **canonical user ID** — the stable internal identifier that survives across channels. "Multiple users" describes the system property (more than one person can interact with one Typhoon runtime); "canonical user" is the internal name for one of them. The distinction matters because a single person may eventually appear on multiple channels (Telegram today; Slack, Discord, web hooks later), and the canonical ID keeps their signals, memory, and per-user config tied together regardless of which channel delivered the message. Typhoon does not authenticate users itself — the channel does (Telegram authenticates the human via their Telegram account; the bot token authenticates the bot). Typhoon resolves the channel-delivered identity to a canonical user via a verified binding, then trusts it.
+Two concepts, deliberately separated:
 
-What's per-user vs. shared:
+- **User** — a human, identified by OAuth (Google or GitHub) at the persona-core layer. One row in `user`, with `role` ∈ `{admin, author}` and an `active` flag. The user is the auth boundary.
+- **Persona** — a writer/agent identity *owned by a user*. One row in `persona`, keyed by `slug`, referencing `user_id`. The persona row holds the bundle that makes the agent act *as* this persona — `expression`, `mental_models`, `heuristics`, `antipatterns`, `limits`. **One user owns many personas.** A user might have a "deploy-coding" persona and a "weekly-AI-news writer" persona; each is a distinct agent identity with its own behavioral configuration.
 
-- **Shared.** The tool registry. When one user's signals motivate a tool, every user benefits once the operator approves. Tools are the artifact; sharing is the point.
-- **Per-user.** Signals, memory, and per-user config (`agent.tone` and similar). Tagged by canonical user ID; cross-user reads are a privacy bug. Dream is the deliberate exception — its scan reads across all users so cross-user pattern overlap can become evidence for a shared tool.
+The persona row *is* the soul. The "soul proposals" concept from earlier drafts maps directly to dream-driven changes to a persona's attribute bundle (heuristics, antipatterns, etc.); they are renamed **persona proposals** in this design.
 
-v0.1 is single-channel (Telegram) plus the operator's external-agent channel (Claude Code, Cursor, Codex). The external-agent channel defaults to the operator's canonical user; an explicit `--user` flag is added when a second person uses that channel.
+What's per-X vs. shared:
+
+- **Shared across the whole runtime.** The tool registry. When one persona's signals motivate a tool, every persona benefits once an admin approves. Tools are the artifact; sharing is the point.
+- **Per-persona.** Signals, memory, persona-attribute proposals. Tagged by `persona_slug`; cross-persona reads are a privacy bug. Dream is the deliberate exception — it scans across all personas so cross-persona pattern overlap can become evidence for a shared tool.
+- **Per-user.** OAuth identity, role, audit trail. These live in persona-core's tables and are not duplicated.
+
+Identity flow per channel turn. Typhoon does not authenticate users itself — persona-core's OAuth layer authenticates the human; the bot token authenticates the bot. The runtime resolves a channel message to *(user, persona)* in two steps:
+
+1. **Channel binding → user.** `(channel, bot_account_id, peer_id) → user_id`, via a verified binding row.
+2. **Bot account → active persona.** v0.1 uses the simplest model: **one Telegram bot account corresponds to one persona**. The bot's persona is configured at deploy time. Future versions may add per-thread or command-driven persona switching, but v0.1 ships with per-bot persona because it's the cleanest mapping (the bot's credentials already authenticate it as that persona) and it generalises to future channels (Slack workspace = persona, Discord server = persona).
+
+The role gate is on the *user*, not the persona. Only a user with `role='admin'` may ratify proposals or mutate the tool registry; a `role='author'` user contributes signals, consumes memory, and runs installed tools through whichever of their personas is active. The deploying party is seeded as the first admin at `typhoon init`. v0.1 has exactly one admin and zero or more authors.
+
+v0.1 is single-channel (Telegram, with one bot per persona) plus the admin's external-agent channel (Claude Code, Cursor, Codex). The external-agent channel defaults to the admin's primary persona; an explicit `--persona` flag is added when a second persona uses that channel.
 
 ### What dream produces
 
@@ -106,7 +119,7 @@ Three outputs, each with its own landing path:
 |---|---|---|
 | Memories | `memories` table (agent context only) | No — low stakes, reversible |
 | CLI proposal briefs | `cli_proposals` → forge → `~/.typhoon/bin/` | Yes — every time in v0.1 |
-| Soul proposals | `soul_proposals` → `config` | Yes — every time |
+| Persona proposals | `persona_proposals` → `persona` row attribute bundle | Yes — every time |
 
 Memory writes happen inside the dream run — worst case is noise in next session's context. Executable state (binaries, config) always routes through a proposal queue.
 
@@ -170,7 +183,7 @@ The delivery carries:
 
 Approval means the operator is satisfied with the delivery against the brief and the hardened requirement. Typhoon runs the hardcoded-path lint and records metadata, but it does not judge correctness — that's the forge's job and the operator's call.
 
-Three rejections on the same pattern (or the same replacement) stops dream from re-proposing it — same 3-strike rule as soul proposals.
+Three rejections on the same pattern (or the same replacement) stops dream from re-proposing it — same 3-strike rule as persona proposals.
 
 ---
 
@@ -302,7 +315,7 @@ Hermes forges skill documents and is now exploring self-evolution of skills, pro
 | In-context skill catalog | Token tax — the whole reason we exist |
 | Silent changes to executable state | Every CLI install needs operator approval in v0.1; tier-based auto-install is a v0.2 question |
 | Typhoon verifying CLI correctness | Correctness is the forge's responsibility — it delivers source + correctness argument; operator accepts or rejects. Typhoon stores metadata and rejects hardcoded paths, but does not sandbox or run replay tests as a correctness gate. |
-| Silent personality / config changes | Soul proposals always require approval — no auto-tier exists for `config` |
+| Silent personality changes | Persona proposals always require approval — no auto-tier exists for `persona` attribute mutations |
 | Typhoon writing CLI source code itself | Synthesis is delegated to the operator's chosen coding-agent forge; Typhoon writes proposal briefs, not code |
 | Typhoon invoking the forge automatically (v0.1) | Operator runs the forge manually with their chosen coding agent; automation is deferred until the full loop is validated end-to-end by hand |
 | Picking a single CLI language | Operator (via the forge) picks per CLI, constrained only by "runs on the Linux/Mac host" |
@@ -333,7 +346,7 @@ Typhoon itself: no YAML, no JSON config, no Python, no Node. Generated CLIs: wha
 ## 8. Typhoon's Own Command Surface (sketch — exact shape belongs in the design doc)
 
 ```bash
-typhoon init --url URL --token TOK     # connect TursoDB, run migrations + seed
+typhoon init --url URL --token TOK     # connect persona-core TursoDB, run Typhoon migrations + seed
 typhoon gateway --telegram             # Telegram bot daemon (primary channel)
 
 typhoon dream [--catchup]              # manual dream cycle (writes proposal briefs)
@@ -346,7 +359,7 @@ typhoon tool propose submit <id> --requirements <file> --source <file>
                                                           # correctness argument, deps, metadata
 typhoon tool propose approve|edit|reject <id>             # resolve once awaiting_user
 typhoon tool list|show|disable|enable|rollback|delete|purge|promote|sync|check-deps  # lifecycle (see §4)
-typhoon soul list|show|approve|reject                     # personality/config proposals
+typhoon persona list|show|approve|reject                  # persona-attribute proposals
 typhoon signal record / typhoon memory query              # external-agent sidecar one-shots
 
 typhoon config get|set|list

@@ -25,16 +25,18 @@ HLD answers "what is the system / what are the responsibilities / what are the b
 
 3. **S5 organised by component groups.**
    HLD keeps S5 as one top-level subsystem but names four review-sized component groups for DLD organisation:
-   - S5A — Data-access APIs (Tool registry, Memory store, Signal store, Proposal queue, Config, Identity bindings)
+   - S5A — Data-access APIs (Tool registry, Memory store, Signal store, Proposal queue, Config, Identity &amp; persona resolution, Persona attributes)
    - S5B — Storage adapters (TursoDB driver, filesystem/artifact storage mechanics)
    - S5C — Service adapters (Channel service adapters, LLM service adapters)
    - S5D — Transaction and lock primitives (`BEGIN IMMEDIATE` helper, filesystem locks, registry-mutation protocol helpers)
 
-4. **Data Model is a real chapter, not optional.** Most stable, most cross-referenced artifact. Centralising the schema means one place for schema review, one place for migration discipline, and zero risk of S2 and S4 disagreeing on what `cli_proposals.status` means. Write it alongside S5 (or first).
+   Note: Identity &amp; persona resolution and Persona attributes read (and Persona attributes also write) persona-core's `user` and `persona` tables — the rest own Typhoon's own tables. The shared schema constraint shapes the Data Model chapter (below) and S5A.
+
+4. **Data Model is a real chapter, not optional.** Most stable, most cross-referenced artifact. Centralising the schema means one place for schema review, one place for migration discipline, and zero risk of S2 and S4 disagreeing on what `cli_proposals.status` means. Write it alongside S5 (or first). The chapter must distinguish Typhoon's own tables (signal, memory, tool registry, proposal queues, channel bindings, system config, daemon state) from persona-core's tables (`user`, `persona`, `audit_log`) that Typhoon reads-and-sometimes-writes. Migrations are versioned per owner: `('persona-core', N)` and `('typhoon', M)`; Typhoon's migrations apply on top of persona-core's and never edit persona-core's tables outside of dream-driven persona-attribute writes.
 
 5. **Command contracts: split conventions from grammar.**
-   - **CLI conventions** (exit-code ranges, JSON envelope, `--user` semantics, `--json` default, error format) live in `DLD.md`'s conventions chapter.
-   - **Per-command grammar** lives inside the owning subsystem. `tool propose approve` next to S4's approval transaction; `signal record` next to S2's recorder.
+   - **CLI conventions** (exit-code ranges, JSON envelope, `--persona` semantics, `--json` default, error format) live in `DLD.md`'s conventions chapter.
+   - **Per-command grammar** lives inside the owning subsystem. `tool propose approve` next to S4's approval transaction; `signal record` next to S2's recorder; `persona approve` next to S4's persona-attribute mutation.
 
 6. **State machines stay in S4.** HLD §3 is authoritative for legal transitions. S4's DLD chapter expands on which functions perform each transition, which SQL transaction wraps each step, which errors guard illegal transitions, and which tests prove each transition. Don't lift §3 into a standalone DLD chapter.
 
@@ -59,10 +61,12 @@ DLD.md
   - how to read subsystem chapters
 
   ## Data Model
-    - tables, indexes, constraints
-    - migration rules (versioned, additive-only)
-    - row ownership / scoping (canonical_user_id-tagged vs system-scoped)
+    - persona-core's tables vs. Typhoon's tables; coexistence rules
+    - tables, indexes, constraints (Typhoon-owned)
+    - migration rules (versioned per owner; additive-only)
+    - row ownership / scoping (persona_slug-tagged, user_id-tagged, vs system-scoped)
     - schema-level invariants and CHECK constraints
+    - persona row attribute-column write paths (persona-core direct edits vs. Typhoon's approved persona proposals)
 
   ## S5A — Data-access APIs
   ## S5B — Storage adapters
@@ -100,7 +104,8 @@ These are decisions that should be stated up front, not rediscovered per chapter
 - **Workspace boundary = compile-time where practical.** Application crates may not bypass data-access APIs to write stores directly; service adapters may not own Typhoon lifecycle policy. (HLD §2.5 already flags this; restate as a binding rule.)
 - **No `anyhow` in library crates.** Already in HLD §2.5; restate.
 - **No `tokio::main` in library crates.** Async-runtime choice is binary-level. (Already in HLD §2.5.)
-- **Per-row `canonical_user_id` enforcement.** Every data-access API for per-user state takes `canonical_user_id` and filters every read and write — verified by test, not by convention.
+- **Per-row `persona_slug` enforcement.** Every data-access API for per-persona state (signals, memory, persona proposals) takes `persona_slug` and filters every read and write — verified by test, not by convention. Cross-persona reads through these APIs are forbidden; dream is the only consumer that opts into a cross-persona scan, through a separate API.
+- **persona-core schema is read-mostly.** Typhoon's data-access libraries treat persona-core's `user` and `persona` tables as read-mostly. The only Typhoon-driven write into persona-core's schema is a persona-attribute column update through the Persona attributes library, executed inside an approved persona-proposal transaction. No Typhoon code may write `user`, `audit_log`, or `invite`.
 - **Review order.** S5A (data-access APIs) and S5D (transaction/lock primitives) are the sign-off blocker for S1–S4. S5B (storage adapters) may follow alongside S5A; S5C (service adapters) may be drafted in parallel with S2. After S5A and S5D are stable, S1–S4 are independent.
 
 ## Open decisions for DLD-time
@@ -109,7 +114,7 @@ These don't need to be settled before drafting starts but should be tracked:
 
 1. **Async runtime per process.** v0.1 daemons (gateway, scheduler) need full Tokio; one-shot CLIs may run on `current_thread` Tokio or a `block_on` bridge. DLD picks per-process, given the libSQL client's async surface.
 2. **Sandbox mechanism.** Forged tool execution sandbox specifics (bwrap config, seccomp filters, resource limits, AppArmor/SELinux interaction). HLD does not commit; PLAN §8 lists this as deferred.
-3. **Forged tool execution permissions.** v0.1 default: forged CLI runs with the same privileges as the invoking Typhoon process — typically the channel gateway daemon when invoked from a channel turn, or the operator's shell when invoked manually. DLD confirms or revises.
+3. **Forged tool execution permissions.** v0.1 default: forged CLI runs with the same privileges as the invoking Typhoon process — typically the channel gateway daemon when invoked from a channel turn, or the admin's shell when invoked manually. DLD confirms or revises.
 4. **Success-tagging edge cases.** What counts as a "correction"? PLAN §8 R8 flagged abandoned tasks as a false-positive risk. DLD specifies the rule.
 5. **Retrieval budget knobs.** Exact `top_k`, similarity threshold, per-turn token budget. PLAN §8 lists as placeholders to tune in first two weeks.
 6. **Replacement similarity thresholds.** Dream's "is this proposal a replacement for an existing tool?" decision; threshold values.
