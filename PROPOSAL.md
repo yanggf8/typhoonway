@@ -51,7 +51,7 @@ No skill registry. No system-prompt catalog. No agent-side install.
                        ▼
            Recorder writes dream_signals (SQL rows)
                        │
-                       ▼   nightly cron or `typhoon dream`
+                       ▼   cron readiness check or `typhoon dream --force`
            LIGHT phase  — dedupe, sort signals
            REM   phase  — LLM clusters *successful* signal chains,
                           detects repeated workflows, checks existing CLIs
@@ -84,9 +84,9 @@ No skill registry. No system-prompt catalog. No agent-side install.
     Next session: core surfaces the tool through the registry-backed tool manifest; memory may add context.
 ```
 
-Dream can run on a cheap batch model because it only writes proposal briefs. The operator handles forge work out-of-band with whichever coding agent gives the best requirement and code quality for that proposal. Online interaction touches the frontier LLM and the relevant memories — never a skill catalog.
+Dream can run on a cheap batch model because it only writes proposal briefs, and it should not run a full batch merely because the clock ticked. Cron is a wake-up mechanism: before light/REM/deep work starts, dream measures accumulated signal mass since the last full run, using normalized signal-token count plus successful signal-chain count. If neither signal tokens nor successful chains clear the configured batch thresholds, dream prunes stale rows, records a skipped check, and avoids LLM calls. The operator handles forge work out-of-band with whichever coding agent gives the best requirement and code quality for that proposal. Online interaction touches the frontier LLM and the relevant memories — never a skill catalog.
 
-Dream is a single-writer batch with a lease row in `dream_runs` (heartbeat-bearing; phase ∈ {light, rem, deep, prune}). The operator can query a running dream's phase, elapsed time, and ETA via `typhoon dream status`, and request a cooperative shutdown via `typhoon dream cancel` — the dream observes the request at each phase boundary and before/after each deep-phase LLM call, persists work it has already paid for when a completed deep chunk returns, and exits with status `cancelled`. Total runtime is bounded by `dream.max_runtime_minutes`; each deep-phase LLM call gets a deadline no later than the remaining dream runtime, and a timeout marks the run `timed_out` instead of letting the heartbeat hide a hung call. A second `typhoon dream` invocation while a live run exists prints status rather than failing with a lock error, so the operator can always tell what's happening.
+Dream is a readiness-gated single-writer batch with a lease row in `dream_runs` (heartbeat-bearing; phase/status ∈ {light, rem, deep, prune, skipped}). The operator can query a running dream's phase, elapsed time, ETA, and pending signal mass via `typhoon dream status`, and request a cooperative shutdown via `typhoon dream cancel` — the dream observes the request at each phase boundary and before/after each deep-phase LLM call, persists work it has already paid for when a completed deep chunk returns, and exits with status `cancelled`. Total runtime is bounded by `dream.max_runtime_minutes`; each deep-phase LLM call gets a deadline no later than the remaining dream runtime, and a timeout marks the run `timed_out` instead of letting the heartbeat hide a hung call. A second `typhoon dream` invocation while a live run exists prints status rather than failing with a lock error, so the operator can always tell what's happening. Manual `typhoon dream --force` bypasses the readiness gate for explicit operator runs and tests.
 
 ### Users and personas
 
@@ -359,7 +359,7 @@ Typhoon itself: no YAML, no JSON config, no Python, no Node. Generated CLIs: wha
 typhoon init --url URL --token TOK     # connect persona-core TursoDB, run Typhoon migrations + seed
 typhoon gateway                        # Channel daemon: Telegram edge loop + queue-consuming worker loop
 
-typhoon dream [--catchup]              # manual dream cycle (writes proposal briefs)
+typhoon dream [--catchup] [--force]    # readiness-gated dream cycle; --force bypasses the signal-token gate
 typhoon cron                           # scheduler daemon
 
 typhoon tool propose list [--awaiting-forge|--awaiting-user]   # CLI proposals

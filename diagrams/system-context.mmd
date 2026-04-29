@@ -29,7 +29,7 @@ flowchart TB
       subgraph MgmtPlane["Management plane — bypasses core, no signals"]
         direction TB
         TOOLMGR["<b>typhoon tool — tool manager</b><br/><b>ingest:</b> propose list / show / submit /<br/>approve / reject<br/><b>operate:</b> list / show / diff / history /<br/>disable / enable / rollback /<br/>delete / purge / promote / sync"]
-        DREAM["<b>typhoon dream</b><br/><i>standalone batch; lease row in dream_runs.<br/>Reads signals, writes proposals + memories.<br/>status / cancel via dream_runs</i>"]
+        DREAM["<b>typhoon dream</b><br/><i>readiness-gated batch; lease row in dream_runs.<br/>Runs when signal tokens/chains accumulate.<br/>status / cancel via dream_runs</i>"]
         HEALTH["<b>typhoon health</b><br/><i>reports gateway/cron<br/>daemon liveness</i>"]
       end
     end
@@ -72,10 +72,10 @@ flowchart TB
     CORE ==>|tells recorder to record| REC
     REC ==>|writes signals| DB
 
-    CRON -.->|spawns management target| DREAM
+    CRON -.->|wakes management target| DREAM
 
     DREAM <-->|proposal brief drafting| DLLM
-    DREAM -->|writes proposal briefs: awaiting_forge| TOOLMGR
+    DREAM -->|writes proposal briefs when ready: awaiting_forge| TOOLMGR
     DREAM <--> DB
     TOOLMGR <--> DB
     TOOLMGR <--> FS
