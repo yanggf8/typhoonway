@@ -383,3 +383,23 @@ typhoon sql "<SELECT ...>"             # debug, read-only
 Schema details, atomicity and idempotency rules, wasmtime WIT interface, scoring-weight tables, and the phase-by-phase build plan belong in the **design doc and implementation plan** that come after this proposal settles. This document is the goal, the mechanism, and the evidence — nothing more.
 
 `OUTDATEDPLAN.md` and `OUTDATEDDESIGN.md` describe an earlier Cloudflare-Workers-shaped scope and do not apply. New plan and design will be written against this proposal.
+
+---
+
+## 10. Relation to prior work
+
+Typhoon's surface — multi-channel gateway, per-agent identity, tool registry, dream-driven self-growth — overlaps with [OpenClaw](https://github.com/openclaw/openclaw) and the [Pi](https://github.com/badlogic/pi-mono) agent runtime that sits inside it. Earlier drafts even used OpenClaw's "soul" vocabulary, since renamed to "persona." The lineage is real.
+
+**Kept:**
+
+- Channel-as-boundary with identity resolved on ingress (`(channel, account, peer) → user/persona`); core never sees raw channel state.
+- Reviewed tool/skill descriptor + bounded LLM tool manifest; core mediates the call, the LLM picks from the manifest, not freely.
+- Per-agent attribute bundle (`expression / mental_models / heuristics / antipatterns / limits`), in spirit similar to a `SOUL.md`.
+
+**Deliberately rejected:**
+
+- *Unsupervised self-modification.* Pi extends itself on demand ("ask it, hit /reload"). Typhoon requires forge + admin ratification for every tool and persona-attribute change, with 3-strike rejection guards and atomic registry mutation. Dream proposes; humans ratify.
+- *Local single-user substrate.* Pi/OpenClaw assume one device, local files (JSONL sessions, in-process plugins). Typhoon shares one cloud TursoDB with persona-core; many users, many personas each, all durable state in the DB. No local SQLite.
+- *In-process TypeScript extensions.* Typhoon's tools are CLI binaries under `~/.typhoon/bin/`, invoked by core through the registry — different trust boundary, different atomicity story (`BEGIN IMMEDIATE` + per-tool fs lock + staging + rename + `tool sync` repair).
+
+These divergences are load-bearing. Forking Pi and bolting on a review queue would not produce Typhoon: the cloud DB substrate, the dream-batch readiness gate, the proposal/forge/registry transactional protocol, and the multi-user persona model are designed in from the start.
