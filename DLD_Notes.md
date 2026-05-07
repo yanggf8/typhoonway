@@ -2,6 +2,8 @@
 
 Parked planning for the v0.1 detailed design document. Not the DLD itself — the agreed direction, structure outline, per-chapter template, and open decisions to resume from. Written after HLD §2.1 stabilised on the matrix layer view (commits `c890c03` / `399d606`).
 
+Review record: HLD v0.1 was reviewed by Codex on 2026-05-07. The HLD review punch-list items 1-7 are resolved in the current docs, so DLD drafting may begin from this file.
+
 ---
 
 ## Framing
@@ -30,7 +32,7 @@ HLD answers "what is the system / what are the responsibilities / what are the b
    - S5C — Service adapters (Channel service adapters, LLM service adapters)
    - S5D — Transaction and lock primitives (`BEGIN IMMEDIATE` helper, filesystem locks, registry-mutation protocol helpers)
 
-   Note: Identity &amp; persona resolution and Persona attributes read (and Persona attributes also write) persona-core's `user` and `persona` tables; Channel queue owns Typhoon's durable channel inbox/outbox tables; the rest own Typhoon's other tables. The shared schema constraint shapes the Data Model chapter (below) and S5A.
+   Note: In the candidate workspace, S5A and S5D fold into `typhoon-data`; S5B and S5C fold into `typhoon-adapters`. Identity &amp; persona resolution and Persona attributes read (and Persona attributes also write) persona-core's `user` and `persona` tables; Channel queue owns Typhoon's durable channel inbox/outbox tables; the rest own Typhoon's other tables. The shared schema constraint shapes the Data Model chapter (below) and S5A.
 
 4. **Data Model is a real chapter, not optional.** Most stable, most cross-referenced artifact. Centralising the schema means one place for schema review, one place for migration discipline, and zero risk of S2 and S4 disagreeing on what `cli_proposals.status` means. Write it alongside S5 (or first). The chapter must distinguish Typhoon's own tables (channel inbox/outbox queue, signal, memory, tool registry, proposal queues, channel bindings, system config, daemon state) from persona-core's tables (`user`, `persona`, `audit_log`) that Typhoon reads-and-sometimes-writes. Migrations are versioned per owner: `('persona-core', N)` and `('typhoon', M)`; Typhoon's migrations apply on top of persona-core's and never edit persona-core's tables outside of dream-driven persona-attribute writes.
 
@@ -110,6 +112,7 @@ These are decisions that should be stated up front, not rediscovered per chapter
 - **Channel queue is durable loop-to-loop handoff.** The gateway edge loop and gateway worker loop run in one v0.1 daemon, but they communicate through Typhoon-owned Turso inbox/outbox rows with lease owner/expiry, attempt count, next-at, provider update ID dedupe, and dead-letter state. Do not replace this with an in-memory Rust channel; the queue is the durable boundary that preserves work across daemon restarts and can support split deployments later.
 - **No implicit identity fallback for channel turns.** A queued channel turn may enter core only after the gateway worker loop resolves a verified binding and a configured persona. Missing binding means the inbound row moves to `dead_letter` with reason `binding_missing`; it is not auto-bound, not mapped to an admin default, and not answered with an onboarding prompt unless a future design adds an explicit binding flow.
 - **`tool.md` is required for LLM tool use.** Every approved forged/promoted CLI must have a reviewed `tool.md` descriptor. Core builds the bounded LLM tool manifest from Tool registry rows and `tool.md`; memory may add context, but it is not the callable interface.
+- **Active `tool.md` storage is registry-row storage.** During proposal review, `tool.md` is attached to proposal data. On approval, the reviewed active copy is stored as a column on the tool registry row, not as a filesystem sidecar.
 - **persona-core schema is read-mostly.** Typhoon's data-access libraries treat persona-core's `user` and `persona` tables as read-mostly. The only Typhoon-driven write into persona-core's schema is a persona-attribute column update through the Persona attributes library, executed inside an approved persona-proposal transaction. No Typhoon code may write `user`, `audit_log`, or `invite`.
 - **Review order.** S5A (data-access APIs) and S5D (transaction/lock primitives) are the sign-off blocker for S1–S4. S5B (storage adapters) may follow alongside S5A; S5C (service adapters) may be drafted in parallel with S2. After S5A and S5D are stable, S1–S4 are independent.
 
@@ -140,4 +143,4 @@ These don't need to be settled before drafting starts but should be tracked:
 
 ## Next action
 
-Land HLD review cycle (in progress). Once HLD is approved, draft `DLD.md` starting with conventions chapter and Data Model, then S5A and S5D in parallel (these are the blockers for S1–S4). S5B follows alongside S5A; S5C may be drafted in parallel with S2. Subsystem chapters S1–S4 follow once S5A's API surface is stable.
+Draft `DLD.md` starting with conventions chapter and Data Model, then S5A and S5D in parallel (these are the blockers for S1–S4). In the candidate workspace, both S5A and S5D live under `typhoon-data`. S5B follows alongside S5A; S5C may be drafted in parallel with S2. Subsystem chapters S1–S4 follow once S5A's API surface is stable.

@@ -27,7 +27,7 @@ When in doubt about architecture, the most-recent commits to `HLD.html` are the 
 
 ## Vocabulary (terms changed — read against current docs, not OUTDATED*)
 
-- **Tools, not skills.** The artifact is a forged or admin-promoted CLI installed under `~/.typhoon/bin/`, plus a reviewed `tool.md` descriptor that tells the LLM when and how to call it. Tables: `cli_proposals`, tool registry rows, `tool.md` metadata, `~/.typhoon/bin/` binaries. The old "skills as plain-text procedures" model is gone.
+- **Tools, not skills.** The artifact is a forged or admin-promoted CLI installed under `~/.typhoon/bin/`, plus a reviewed `tool.md` descriptor that tells the LLM when and how to call it. During review, `tool.md` is proposal data; on approval, the active reviewed copy is stored as a column on the tool registry row, not as a filesystem sidecar. Tables: `cli_proposals`, tool registry rows, `~/.typhoon/bin/` binaries. The old "skills as plain-text procedures" model is gone.
 - **Forge.** Admin-driven implementation step that turns a dream proposal brief into hardened requirements + `tool.md` + source + tests + correctness argument. v0.1 is manual; a forge CLI may assist later. Typhoon does not synthesize source itself.
 - **User and persona, not canonical user.** Typhoon shares its TursoDB cloud database with **persona-core**, which owns the `user` and `persona` schema. A **user** is an OAuth-authenticated human (one row in `user`, with `role` ∈ `{admin, author}`). A **persona** is a writer/agent identity *owned by a user*, keyed by `slug`, holding the attribute bundle (`expression`, `mental_models`, `heuristics`, `antipatterns`, `limits`) that makes the agent behave as that persona. **One user → many personas.** Per-X data (signals, memory, persona-attribute proposals) is keyed by `persona_slug`. Tools are shared across all personas. The `admin` role gates ratification.
 - **Channel binding.** v0.1 maps `(channel, bot_account_id, peer_id) → user_id` via a verified binding row, plus one Telegram bot account → one persona via configuration. Bot credentials select the active persona; admin uses an explicit `--persona` flag on the external-agent channel when not the primary one.
@@ -98,7 +98,7 @@ Placeholders to tune in the first two weeks (PLAN §8). Do not change without a 
 
 ## Acceptance Gate
 
-PLAN §5.9 "v0.1 is done when" is the current criteria checklist. HLD review approval gates DLD drafting; DLD_Notes.md captures the DLD structure to use once HLD is signed off.
+PLAN §5.9 "v0.1 is done when" is the current criteria checklist. HLD v0.1 review was recorded in DLD_Notes.md on 2026-05-07; DLD drafting may proceed from that structure.
 
 ## Working with this repo
 

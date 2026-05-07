@@ -54,7 +54,7 @@ Scheduled use entries are different: a cron entry may target a specific tool or 
 
 ## Submission Rule
 
-`typhoon tool propose submit` requires a `tool.md` file for every forged CLI delivery. The tool manager stores it with the proposal, includes it in operator review, and installs it into the active tool registry only on approval.
+`typhoon tool propose submit` requires a `tool.md` file for every forged CLI delivery. The tool manager stores it with the proposal, includes it in operator review, and writes the active reviewed copy to the tool registry row only on approval.
 
 `typhoon tool promote` also requires or generates a reviewed `tool.md` before the promoted script becomes active.
 
