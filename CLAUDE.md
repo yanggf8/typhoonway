@@ -12,13 +12,15 @@ A self-growing agent runtime in Rust backed by TursoDB/libSQL. One binary, multi
 
 ## Current State
 
-**Spec-stage.** Design docs only — no `Cargo.toml`, no `src/`, no compiled artifacts.
+**Spec-stage.** Design docs only — no `Cargo.toml`, no `src/`, no compiled Rust artifacts (only the rendered diagram SVGs are generated).
 
 | Doc | Role |
 |---|---|
 | `PROPOSAL.md` | Vision, tech-stack rationale, no-go list. Source of truth for **direction**. |
 | `PLAN.md` | v0.1 work breakdown, milestones, test cases, risks, decisions deferred to DESIGN. Source of truth for **scope/budget**. |
 | `HLD.html` | v0.1 high-level design (layer / logical / process / subsystem views, project layout, state machines). Source of truth for **architecture**. |
+| `diagrams/` | `.mmd` Mermaid sources (source of truth) + rendered `diagrams/svg/*.svg` referenced by `HLD.html`. Re-render with `sh diagrams/render.sh`. |
+| `TOOL.md` | Contract for the LLM-facing `tool.md` descriptor: required headings/order, runtime use, submission rule, constraints. Source of truth for **`tool.md` shape**. |
 | `DLD_Notes.md` | Parked planning for the DLD: structure outline, per-chapter template, open decisions. Not the DLD itself. |
 | `DESIGN-HLD-WIP.md` | Historical planning notes for HLD. Not authoritative. |
 | `OUTDATEDPLAN.md`, `OUTDATEDDESIGN.md` | Earlier scope (Cloudflare Workers, browser, skills, `db-batch`). **Historical only**; do not copy patterns. |
@@ -104,6 +106,7 @@ PLAN §5.9 "v0.1 is done when" is the current criteria checklist. HLD v0.1 revie
 
 - **No code yet.** Edits target Markdown / HTML design docs.
 - **HLD edits must stay self-consistent.** §2.1 layer view, §2.2 modules, §2.3 process sequences, §2.4 subsystems, §3 state machines reference each other. After any change, check the cross-references.
+- **HLD diagrams live in `diagrams/*.mmd`, not inline in the HTML.** Edit the `.mmd` source, then re-render with `sh diagrams/render.sh` (uses local `mmdc`, else pinned `npx -y @mermaid-js/mermaid-cli@10.9.1`); `HLD.html` references the SVGs under `diagrams/svg/`. Never hand-edit the generated SVGs.
 - **PROPOSAL / PLAN are living scope docs.** Revise in place; don't append.
 - **OUTDATEDPLAN.md / OUTDATEDDESIGN.md are frozen.** Never modify.
 - **DLD_Notes.md is WIP planning, not the DLD.** Updated alongside HLD when subsystem partitioning changes.
