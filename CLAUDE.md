@@ -10,6 +10,14 @@ A self-growing agent runtime in Rust backed by TursoDB/libSQL. One binary, multi
 
 **Self-growing with human approval.** The dream cycle mines signals for high-value patterns, drafts proposal briefs into `cli_proposals` / `persona_proposals`, an admin drives a forge workflow to harden each brief (for tools), and an admin (or persona owner, for persona proposals) ratifies. Nothing takes effect until ratification.
 
+## Commands
+
+**Spec-stage: there is no build, lint, or test to run.** No `Cargo.toml`, no `src/`, no `cargo`/`npm` project — don't go looking for them. Edits target Markdown / HTML. The only command in this repo:
+
+```sh
+sh diagrams/render.sh   # Re-render diagrams/*.mmd → diagrams/svg/*.svg after editing any .mmd source
+```
+
 ## Current State
 
 **Spec-stage.** Design docs only — no `Cargo.toml`, no `src/`, no compiled Rust artifacts (only the rendered diagram SVGs are generated).
@@ -45,7 +53,7 @@ Authoritative list in HLD §2.2 catalog and PROPOSAL §"CLI Commands". Key surfa
 typhoon init --url URL --token TOK   # Apply Typhoon migrations on persona-core DB; mark deploying user as admin (idempotent)
 typhoon gateway                      # Channel daemon; edge loop talks Telegram, worker loop consumes queue and invokes core
 typhoon cron                         # Scheduler daemon
-typhoon dream [--force]              # Readiness-gated batch; --force bypasses signal-token gate
+typhoon dream [--catchup] [--force]  # Readiness-gated batch; --force bypasses signal-token gate
 typhoon dream {status,cancel,stats}  # Live phase + ETA + pending signal mass / cooperative cancel / proposal-funnel stats
 typhoon tool {propose,list,show,diff,history,disable,enable,
               rollback,delete,purge,promote,sync,check-deps}
@@ -91,12 +99,12 @@ Spread across PROPOSAL/PLAN/HLD; violating any is a regression.
 
 ## Scoring Thresholds (don't drift these without updating docs)
 
-Placeholders to tune in the first two weeks (PLAN §8). Do not change without a doc update.
+The only numeric placeholders that exist yet are the six in **PLAN §8.10** ("expect to re-tune in the first two weeks"). Do not change without a doc update, and **do not invent** weights or decay formulas — PLAN's preamble and §5 explicitly defer memory-promotion weights, tool-proposal weights, and retrieval knobs to `DESIGN.md`; they are not fixed anywhere yet.
 
-- **Memory promotion (deep phase):** `score >= dream.min_score` (0.8), `recall_count >= dream.min_recall` (3), `unique_queries >= dream.min_unique_queries` (3). Weights: Frequency 0.24 · Relevance 0.30 · Diversity 0.15 · Recency 0.15 · Consolidation 0.10 · Conceptual 0.06.
-- **Tool proposal:** `value_score >= 0.7` AND `frequency >= 5`. Weights: Frequency 0.30 · Success Rate 0.25 · Sequence Length 0.20 · Time Span 0.15 · Low Corrections 0.10.
-- **Dream batch readiness:** full dream runs when `pending_signal_tokens >= dream.min_batch_signal_tokens` (placeholder 8000) OR `pending_successful_chains >= dream.min_batch_successful_chains` (placeholder 10). To prevent starvation, `dream.max_batch_wait_hours` (placeholder 72) may trigger a run only if at least `dream.min_batch_floor_tokens` (placeholder 2000) are pending. Scheduled checks below those floors record `skipped` and avoid LLM spend.
-- **Recency decay:** `2^(-age_days / dream.recency_half_life_days)` (half-life 14d). Max age 30d.
+- **PLAN §8.10 placeholders:** `dream.min_batch_signal_tokens=8000`, `dream.min_batch_successful_chains=10`, `dream.min_batch_floor_tokens=2000`, `dream.max_batch_wait_hours=72`, `dream.min_frequency=5`, `dream.min_score=0.7`.
+- **Dream batch readiness (PLAN §8.10, HLD §2.3):** full dream runs when `pending_signal_tokens >= dream.min_batch_signal_tokens` OR `pending_successful_chains >= dream.min_batch_successful_chains`. To prevent starvation, `dream.max_batch_wait_hours` may trigger a run only if at least `dream.min_batch_floor_tokens` are pending. Scheduled checks below those floors record `skipped` and avoid LLM spend.
+- **Tool proposal (PLAN §8.10):** gated by `dream.min_frequency=5` and `dream.min_score=0.7`. The ROI signal is described qualitatively in PROPOSAL (frequency × success × sequence length × time span); the exact weight table is DESIGN work, not yet chosen.
+- **Deferred to DESIGN — do not cite as if fixed:** memory-promotion score/recall/diversity weights, tool-proposal weights, retrieval knobs (`top_k`, similarity threshold, per-turn token budget), and any recency/decay half-life. HLD §2.4 (S3) and PLAN §8 own these; they are unspecified until then.
 
 ## Acceptance Gate
 

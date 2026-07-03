@@ -21,11 +21,11 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - Operator hand-off: `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]`
 - Hardcoded-path lint (cross-platform, regex)
 - Atomic approve / install / rollback via `.history/`
-- CLI lifecycle management (list, show, disable, enable, rollback, delete, purge, promote, check-deps)
+- CLI lifecycle management (list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps, sync)
 - Replacement flow with diff + atomic swap
 - 3-strike rejection tracking for both patterns and replacements
 - Persona proposals for persona-attribute changes (always require approval)
-- Cron scheduler (`typhoon cron`) with `--catchup`
+- Cron scheduler (`typhoon cron`) that fires `typhoon dream --catchup` on schedule
 - Queued channel path (`typhoon gateway`) with Telegram adapter — primary user interface in v0.1; one daemon hosts an edge loop and a queue-consuming worker loop, while durable Turso-backed inbox/outbox rows decouple external channel I/O from Typhoon Way's agent loop
 - Observability keepers: `typhoon health`, `typhoon dream stats`, per-CLI health metrics
 
@@ -70,10 +70,10 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W14 | `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]` | W12 | Operator can hand hardened requirement + LLM-facing tool descriptor + source back | M |
 | W15 | Hardcoded-path lint | W14 | Obvious absolute paths rejected | S |
 | W16 | Atomic approve (binary + registry + reviewed `tool.md` + seed memory in one tx) | W14, W15 | Approve is all-or-nothing | M |
-| W17 | CLI lifecycle commands — list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps | W16 | Full management surface | M |
+| W17 | CLI lifecycle commands — list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps, sync | W16 | Full management surface | M |
 | W18 | Replacement flow + `.history/` archival + atomic swap | W16 | Replacement approval swaps cleanly | M |
 | W19 | 3-strike rejection tracking (patterns + replacements) | W12, W18 | Dream stops re-proposing rejected patterns | S |
-| W20 | Cron scheduler (`typhoon cron`) + `--catchup` | W12 | Cron checks dream readiness on schedule; full dream fires only when accumulated signal tokens/chains clear thresholds; catchup performs the same readiness check | S |
+| W20 | Cron scheduler (`typhoon cron`) firing `typhoon dream --catchup` | W12 | Cron checks dream readiness on schedule; full dream fires only when accumulated signal tokens/chains clear thresholds; `--catchup` performs the same readiness check | S |
 | W21 | Telegram channel (`typhoon gateway`) | W10, W6 | Real user interaction flows Telegram → gateway edge loop → channel inbox → gateway worker loop → core → channel outbox → Telegram, and lands in signals | L |
 | W22 | Keepers — `typhoon health`, `typhoon dream stats`, CLI health metrics in `typhoon tool show` | W20 | Observability wired | M |
 | W23 | Test harness for all TC-* cases — runnable from one command | W17, W21 | `make test` runs the whole suite | M |
