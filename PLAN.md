@@ -10,7 +10,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 
 ### 1.1 In scope (v0.1)
 
-- Typhoon Rust runtime — single binary
+- Typhoon Rust runtime — no interpreter alongside it. v0.1 packages every role into one executable with subcommands (the `git` / `docker` model); that is a deployment default, revisable in DESIGN, not an architectural constraint
 - TursoDB (operator-provided account) as the sole state store
 - Schema migrations + seed, both run at `typhoon init --url $URL --token $TOK`
 - Config CRUD with type validation, read-only `typhoon sql`
@@ -36,6 +36,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - Auto-install for pure-tier CLIs (every CLI needs operator approval in v0.1)
 - Multi-runtime sync (one Typhoon runtime instance owns one TursoDB database; TursoDB may still be used from other machines for operator/forge workflows)
 - `wasm32-wasip2` target + wasmtime host
+- Background, priority-ordered rebuilds in `typhoon tool sync` (v0.1 syncs synchronously and skips compiled tools when no local toolchain is present)
 - Binary-pinned artifact distribution
 - Browser / Cloudflare Workers targets (permanently rejected — §6 of PROPOSAL.md)
 
@@ -58,7 +59,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W2 | TursoDB client, migrations, seed (needs URL + token at init) | W1 | `typhoon init` creates schema + seed rows | M |
 | W3 | `config get / set / list`, type validation (`string/int/float/bool/cron`) | W2 | Config CRUD with CHECK enforcement | S |
 | W4 | `typhoon sql` — SELECT-only guard | W2 | SELECT works; writes rejected | S |
-| W5 | Use-plane CLI subcommands (`typhoon signal record`, `typhoon memory query`) wired into Core, recorder path, session model, tool-call signal capture | W2 | Hand-run shell script routes through runtime/recorder and produces `dream_signals` rows | M |
+| W5 | Use-plane CLI subcommands (`typhoon signal record`, `typhoon memory query`) wired into Core, recorder path, session model, tool-call signal capture | W2 | Hand-run shell script routes through runtime/recorder and produces `signals` rows | M |
 | W6 | Success tagging (exit 0 + no next-turn correction) | W5 | Signals carry `success` flag correctly | S |
 | W7 | Stale-signal prune (7d); dream readiness preflight (`pending_signal_tokens`, successful-chain count, skipped-run logging); dream `dream_runs` lease (acquire / heartbeat / stale-row close + new-row takeover); cooperative cancel handlers per phase; max-runtime enforcement including deep-phase LLM call deadlines; `typhoon dream status` (with EWMA-or-static ETA) and `typhoon dream cancel [--wait]` | W5 | Re-running dream is safe (lease takeover); small batches skip without LLM calls; admin can query phase / ETA and request graceful shutdown; old signals cleaned | M |
 | W8 | Dream LLM client (cheap batch model), `dream_runs` logging | W5 | Dream can make LLM calls; runs logged | M |
@@ -70,8 +71,10 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W14 | `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]` | W12 | Operator can hand hardened requirement + LLM-facing tool descriptor + source back | M |
 | W15 | Hardcoded-path lint | W14 | Obvious absolute paths rejected | S |
 | W16 | Atomic approve (binary + registry + reviewed `tool.md` in one tx; no memory write) | W14, W15 | Approve is all-or-nothing | M |
-| W17 | CLI lifecycle commands — list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps, sync | W16 | Full management surface | M |
+| W17 | CLI lifecycle commands — list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps | W16 | Full management surface | M |
+| W17b | `typhoon tool sync` — re-materialize missing/mismatched binaries from registry source, clear orphan staging (synchronous; skips compiled tools when no local toolchain) | W16 | Second machine or post-crash host converges to the registry | S |
 | W18 | Replacement flow + `.history/` archival + atomic swap | W16 | Replacement approval swaps cleanly | M |
+| W18b | Deprecation proposals — `kind=deprecate` enters `awaiting_user` directly, approval flips the target tool to `disabled` and archives the binary | W16 | Dream can retire unused tools through the same ratification gate | S |
 | W19 | Deterministic `pattern_key` derivation + 3-strike rejection tracking (patterns + replacements) | W12, W18 | Same workflow yields the same key across personas and runs; dream stops re-proposing rejected patterns; rejection count is derived from terminal `rejected` rows, not stored | M |
 | W20 | Cron scheduler (`typhoon cron`) firing `typhoon dream --catchup` | W12 | Cron checks dream readiness on schedule; full dream fires only when accumulated signal tokens/chains clear thresholds; `--catchup` performs the same readiness check | S |
 | W21 | Telegram channel (`typhoon gateway`) | W10, W6 | Real user interaction flows Telegram → gateway edge loop → channel inbox → gateway worker loop → core → channel outbox → Telegram, and lands in signals | L |
@@ -161,11 +164,11 @@ Each test case is a command (or short script) with an observable pass criterion.
 
 | ID | What runs | Pass criterion |
 |---|---|---|
-| TC-M2-01 | Shell script invokes `typhoon signal record` once with a synthetic tool call | `dream_signals` has ≥ 1 row with correct `session_id`, `source='tool_call'`, non-empty snippet |
+| TC-M2-01 | Shell script invokes `typhoon signal record` once with a synthetic tool call | `signals` has ≥ 1 row with correct `session_id`, `source='tool_call'`, non-empty snippet |
 | TC-M2-02 | Tool call exits 0, next user turn is non-correction | Resulting signal chain tagged `success=1` |
 | TC-M2-03 | Tool call exits 0, next user turn is "no, do X instead" | Signal chain tagged `success=0` |
 | TC-M2-04 | Two shell scripts each invoke `typhoon signal record` with distinct session IDs | Signals from each carry distinct `session_id` |
-| TC-M2-05 | Seed a signal dated 8 days ago, run dream | Signal deleted from `dream_signals` |
+| TC-M2-05 | Seed a signal dated 8 days ago, run dream | Signal deleted from `signals` |
 
 ### 5.3 M3 — Dream has a brain
 
@@ -184,7 +187,7 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M4-01 | Seed 5 identical successful signal chains matching pattern P; run `typhoon dream --force` | `cli_proposals` has 1 row with `status='awaiting_forge'`, `frequency=5`, non-empty problem description, repeated workflow summary, likely interface sketch, rough acceptance hints, rough tier claim, evidence, ROI score |
 | TC-M4-02 | Seed 5 chains with `success=0`; run `typhoon dream --force` | No CLI proposal created |
 | TC-M4-03 | Seed 4 successful chains (below `min_frequency=5`); run `typhoon dream --force` | No CLI proposal created |
-| TC-M4-04 | Pre-install CLI `foo`; seed signals overlapping `foo`'s origin; run `typhoon dream --force` | Proposal carries `replaces='foo'` |
+| TC-M4-04 | Pre-install CLI `foo`; seed signals overlapping `foo`'s origin; run `typhoon dream --force` | Proposal carries `replaces=<registry tool id of foo>`, not the name |
 | TC-M4-05 | Seed persona-attribute pattern signals (user repeatedly edits a persona's `heuristics`); run `typhoon dream --force` | `persona_proposals` row appears |
 | TC-M4-06 | Run `typhoon dream` concurrently from two shells | Second invocation prints current phase / elapsed / ETA / log tail and exits 0 on a TTY; first completes cleanly |
 | TC-M4-07 | Run `typhoon dream` non-interactively while a live run exists | Prints status and exits ≠ 0 so cron treats the overlap as deferred |
@@ -202,7 +205,7 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M5-01 | `typhoon tool propose submit <id> --requirements req.md --tool-doc tool.md --source cli.sh --tests test.sh` | Proposal stores hardened requirement + `tool.md` + source + tests and flips `awaiting_forge → awaiting_user` |
 | TC-M5-02 | Submit source without `--requirements` or `--tool-doc` | Exit ≠ 0; proposal remains `awaiting_forge` |
 | TC-M5-03 | Submit source containing `/home/yanggf/project` | Exit ≠ 0; lint rejects hardcoded path |
-| TC-M5-04 | `typhoon tool propose approve <id>` on clean proposal | Binary in `~/.typhoon/bin/<name>`; `tool.md` in registry/artifact metadata; `cli_artifacts` row — all in one transaction. No memory row is written by approval |
+| TC-M5-04 | `typhoon tool propose approve <id>` on clean proposal | Binary in `~/.typhoon/bin/<name>`; registry row created with the reviewed `tool.md` body and artifact metadata (checksum, language, dependencies) — all in one transaction. No memory row is written by approval |
 | TC-M5-05 | Approve where binary write fails (inject fault) | No partial state: no registry row, no binary |
 | TC-M5-06 | `typhoon tool disable foo` | Binary removed from PATH; registry row retained with `status='disabled'` |
 | TC-M5-07 | `typhoon tool rollback foo` after replacement | Previous version restored from `.history/`; current version archived |
@@ -226,11 +229,12 @@ Each test case is a command (or short script) with an observable pass criterion.
 | ID | What runs | Pass criterion |
 |---|---|---|
 | TC-M7-01 | `typhoon gateway` with valid bot token | Connects; bot is reachable in Telegram; inbound Telegram update creates a `channel_inbox` row |
-| TC-M7-02 | `typhoon gateway` running, send message to bot | Gateway worker loop claims inbox row; signal appears in `dream_signals` with Telegram-sourced `session_id`; reply lands in `channel_outbox` |
-| TC-M7-03 | Send message from a peer with no verified binding | Gateway worker loop marks inbound row `dead_letter` with reason `binding_missing`; no `dream_signals` row and no `channel_outbox` row are created |
+| TC-M7-02 | `typhoon gateway` running, send message to bot | Gateway worker loop claims inbox row; signal appears in `signals` with Telegram-sourced `session_id`; reply lands in `channel_outbox` |
+| TC-M7-03 | Send message from a peer with no verified binding | Gateway worker loop marks inbound row `dead_letter` with reason `binding_missing`; no `signals` row and no `channel_outbox` row are created |
 | TC-M7-04 | Message triggers a forged CLI via memory retrieval | Bot reply contains the CLI's output after the gateway edge loop delivers the outbox row; `use_count` increments |
 | TC-M7-05 | `typhoon health` | Output includes DB latency, channel queue backlog/oldest age, gateway/cron liveness, last successful write timestamp, recorder health, last dream run status, and latest skipped-run reason if present |
-| TC-M7-06 | `typhoon dream stats` after several runs | Output includes: skipped checks, full runs, clusters detected, graduated to proposal, approved, rejected, expired-unforged |
+| TC-M7-06 | `typhoon dream stats` after several runs | Output includes: skipped checks, full runs, clusters detected, graduated to proposal, approved, rejected, and stale-unforged — the last being a *derived* count of rows still `awaiting_forge` older than `forge.proposal_ttl_days`, not a proposal status |
+| TC-M7-07 | Age a proposal past `forge.proposal_ttl_days` with it still `awaiting_forge` | It appears in the stale-unforged count; its `status` is still `awaiting_forge`; nothing auto-rejects or auto-closes it |
 | TC-M7-07 | `typhoon tool show <name>` for active CLI | Output includes `use_count`, `success_count`, `last_used`, recent errors |
 
 ### 5.8 Cross-cutting invariants
@@ -261,7 +265,7 @@ Each risk has a trigger (how we notice early), a built-in mitigation (designed i
 | **R2. Signals aren't a behavioral contract (accepted limitation)** | — | Admitted in §3 of PROPOSAL.md; forge owns correctness, not Typhoon | Per-CLI `success_count/use_count` ratio in `typhoon tool show` | `typhoon tool rollback` is always available; dream auto-proposes replacement on rising error rate |
 | **R3. Hardcoded-path lint over-rejects useful source** | Path-lint rejection rate > 20% of submissions or repeated operator complaints | False positives are accepted in v0.1; forge revises source and resubmits | `typhoon dream stats` / proposal stats show lint rejection counts and reasons | Tune regex after examples accumulate; allow explicit operator override in a later version |
 | **R4. Telegram signal volume too sparse** | 7-day rolling average < 20 signals/day | External-agent channel runs in parallel; Telegram is primary but not only — operator-driven activity through external agent CLIs also produces signals; dream readiness skips tiny batches instead of spending on weak evidence | `typhoon dream stats` shows 7-day signal volume per channel and skipped-run reasons; `typhoon health` shows channel queue backlog so sparse signals are not confused with stuck delivery | Lower batch thresholds or `dream.min_frequency`; add lightweight `/useful` Telegram command for explicit positive tagging |
-| **R5. Operator forge burden heavier than forecast** | Expired-unforged ratio > 50% over 2 weeks | Thresholds tunable to throttle proposal rate | `typhoon dream stats` shows forge queue depth + expired rate | Raise thresholds; bring forward v0.2 forge automation |
+| **R5. Operator forge burden heavier than forecast** | Stale-unforged ratio > 50% over 2 weeks (derived from `forge.proposal_ttl_days`; not a status) | Thresholds tunable to throttle proposal rate | `typhoon dream stats` shows forge queue depth + stale-unforged rate | Raise thresholds; bring forward v0.2 forge automation |
 | **R6. TursoDB concurrency / availability** | Transaction errors in logs; dream hangs | Single-writer task inside Typhoon; `BEGIN IMMEDIATE` for all approval transactions; `dream_runs` lease row + heartbeat + cooperative cancel for dream | `typhoon health` pings DB, reports latency + last-successful-write; rolls up dream lease state | Retry with exponential backoff; trust Turso SLA; if sustained, consider local libSQL fallback (v0.2 decision) |
 | **R7. Forge's correctness claim mismatches reality** | Forged CLI passes forge's tests but behaves wrong in real use | Tier review intensity is operator-calibrated; mutate tier requires line-by-line review; forge submits a hardened requirement + test plan for review | Post-install `use_count` / `success_count` ratio per CLI | `typhoon tool rollback`; dream proposes replacement; tighten future forge requirements and test plans |
 | **R8. Success tagging false-positives from abandoned tasks** | Operator notices CLIs proposed for workflows they didn't actually complete; dream quality degrades despite threshold tuning | Simple heuristic for v0.1: exit 0 + no next-turn correction. Known limitation. | `typhoon dream stats` exposes proposal origin breakdown: chains with explicit positive signal vs. chains tagged successful by heuristic only | Add explicit `/good` Telegram command for positive tagging; in v0.2, consider LLM-based correction detection |
@@ -270,16 +274,23 @@ Each risk has a trigger (how we notice early), a built-in mitigation (designed i
 
 ## 7. Cross-Cutting Invariants
 
-These apply throughout the project. Each phase must not violate them. See `CLAUDE.md` for the canonical list.
+These are the short-form rules a reviewer can reject a change against without opening another document. They are a **subset**, not the whole set: `CLAUDE.md` carries the full invariant list, and HLD is authoritative wherever a rule needs more than a sentence. Nothing here may contradict either — if it does, this list is the one that is wrong.
 
-1. **Single binary for Typhoon.** No Python, no Node in the runtime. Generated CLIs may use any language.
+A note on what belongs here. An invariant is something whose violation is a defect: a correctness property, an authorization rule, an architectural boundary. A deployment default or packaging convention is not an invariant even when it is the current plan, and listing one here has already caused confusion once (see item 1). Preferences of that kind belong in §1.1 scope or in HLD's deployment assumptions.
+
+1. **Typhoon's runtime is Rust only.** No Python, no Node, no interpreter to install alongside the runtime. Generated CLIs may use any language the forge picks. *Packaging is a separate question and is not an invariant:* v0.1 ships every role in one executable with subcommands (§1.1), but choosing Rust does not imply a single artifact, and emitting several `[[bin]]` targets later would violate nothing here. The architectural constraint is the crate boundary set in HLD §2.5, not the number of executables.
 2. **Every proposal approval is atomic** — `BEGIN IMMEDIATE … COMMIT`, rollback on any failure.
 3. **`typhoon sql` is SELECT-only.** DDL and DML are hard-rejected.
 4. **`config set` validates type.** Float scores clamp to `[0.0, 1.0]`. SQL CHECK is belt-and-braces.
 5. **Skills are not a concept.** No `skills`, `skill_triggers`, or `skill_proposals` tables. No `typhoon skill *` commands. CLIs are the only artifact.
 6. **Typhoon does not write code.** Forge writes code; Typhoon writes proposal briefs and catalogs deliveries.
 7. **Typhoon does not verify correctness.** Hardcoded-path lint and metadata capture are the only submit-time checks Typhoon performs. Correctness is the forge's responsibility, accepted or rejected by the operator.
-8. **One runtime instance = one TursoDB database (shared with persona-core), serving multiple users with multiple personas.** Typhoon shares a TursoDB cloud database with persona-core. persona-core owns the `user` / `persona` / `audit_log` schema (migrations 001–006, schema-version row `('persona-core', N)`); Typhoon adds its own migrations on top (channel inbox/outbox queue, signal store, memory store, tool registry, proposal queues, daemon state; schema-version row `('typhoon', M)`). One Typhoon runtime instance owns one DB; the same DB can help admins work across machines for forge/review, but a second Typhoon runtime writer is not supported. The DB serves multiple users (auth-bearing humans, OAuth via persona-core — one admin seeded at init, plus authors who join via channel binding) and multiple personas (writer/agent identities owned by users; one user → many personas). Per-persona data (signals, memory, persona-attribute proposals) is scoped by `persona_slug`; tools are shared across all personas, and so are the CLI proposals that produce them — a CLI proposal is runtime-scoped state carrying multi-persona provenance, not per-persona state (HLD §2.6). Dream may read across personas only through its dedicated signal-scan API and only to discover shared-tool patterns; its memory and persona-proposal outputs stay closed within one persona. the `role='admin'` user gate enforces ratification and tool-registry mutation; v0.1 maps one Telegram bot account to one persona. External channel I/O is decoupled from Typhoon Way's agent loop through durable queue rows, not an in-memory channel.
+8. **One Typhoon writer per database.** Typhoon shares one TursoDB cloud database with persona-core. persona-core owns the `user` / `persona` / `audit_log` schema (migrations 001–006, schema-version row `('persona-core', N)`); Typhoon adds its own migrations on top (channel inbox/outbox queue, signal store, memory store, tool registry, proposal queues, daemon state; schema-version row `('typhoon', M)`). Exactly one Typhoon runtime instance writes to a given database — v0.1 assumes a single writer and does not coordinate two. The same database may be *read* from other machines for forge/review work.
+9. **Tools are shared; per-persona data is isolated.** Signals, memory, and persona-attribute proposals are scoped by `persona_slug` and filtered by the data-access APIs on every read and write. The tool registry is shared, and so are the CLI proposals that produce it — a CLI proposal is runtime-scoped state carrying multi-persona provenance, not per-persona state. Dream may read across personas only through its dedicated signal-scan API and only to discover shared-tool patterns; its memory and persona-proposal outputs stay closed within one persona. HLD §2.6 is authoritative for the full rule.
+10. **Authorization is on the user, not the persona.** Only `role='admin'` may ratify proposals or mutate the tool registry; a persona's owning user may approve persona proposals targeting that persona. `author` users contribute signals and consume memory and tools.
+11. **External channel I/O is decoupled from the agent loop by durable queue rows**, not an in-memory channel — so work survives a daemon restart and exposes retry/dead-letter state.
+
+**Deployment assumptions, not invariants** (recorded here so they are visible, but a change to any of them is a design decision rather than a defect): the database serves one admin seeded at `init` plus zero or more authors who join via channel binding; v0.1 maps one Telegram bot account to one persona; v0.1 ships every role in a single executable (item 1).
 
 ---
 
@@ -296,6 +307,6 @@ These are design-doc concerns, not plan concerns, but flagging so they don't amb
 7. **Retrieval budget knobs** — exact `top_k`, similarity threshold, per-turn token budget. Affects W10.
 8. **Replacement similarity thresholds** — embedding similarity and signal-overlap cutoffs. Affects W18.
 9. **Forge delivery schema** — exact shape of the hardened requirement, `tool.md`, correctness argument, dependency metadata, and tests submitted via `typhoon tool propose submit`. Affects W14.
-10. **Initial threshold values are placeholders.** `dream.min_batch_signal_tokens=8000`, `dream.min_batch_successful_chains=10`, `dream.min_batch_floor_tokens=2000`, `dream.max_batch_wait_hours=72`, `dream.min_frequency=5`, and `dream.min_score=0.7` are guesses; expect to re-tune in the first two weeks of real signal capture. Not a design decision so much as an operating expectation — plan for the knobs to move.
+10. **Initial threshold values are placeholders.** `dream.min_batch_signal_tokens=8000`, `dream.min_batch_successful_chains=10`, `dream.min_batch_floor_tokens=2000`, `dream.max_batch_wait_hours=72`, `dream.min_frequency=5`, `dream.min_score=0.7`, and `forge.proposal_ttl_days=30` (the age at which an un-forged proposal is *reported* as stale — it never changes the row's status) are guesses; expect to re-tune in the first two weeks of real signal capture. Not a design decision so much as an operating expectation — plan for the knobs to move.
 
 Each of these has a default "make something work" answer that unblocks the phase; the design doc picks the real answer.

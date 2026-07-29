@@ -6,7 +6,7 @@
 <style>
   :root { --fg:#1a1a1a; --muted:#666; --accent:#0a5; --rule:#e5e5e5; --code-bg:#f6f6f6; }
   html { font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: var(--fg); }
-  body { max-width: 880px; margin: 2.5rem auto; padding: 0 1.25rem; }
+  body { max-width: 880px; margin: 2.5rem auto; padding: 0 1.25rem; overflow-x: clip; }
   h1 { font-size: 1.7rem; margin-top: 0; border-bottom: 2px solid var(--fg); padding-bottom: .4rem; }
   h2 { font-size: 1.25rem; margin-top: 2.2rem; border-bottom: 1px solid var(--rule); padding-bottom: .25rem; }
   h3 { font-size: 1.05rem; margin-top: 1.6rem; color: var(--accent); }
@@ -29,9 +29,22 @@
   .layer-matrix .integration-block { border: 1px solid var(--rule); padding: .45rem .55rem; background: #fcfcfc; }
   .layer-matrix .layer-name { font-weight: 700; display: block; margin-bottom: .2rem; }
   .layer-matrix .layer-note { color: var(--muted); }
-  figure.diagram { margin: 1rem 0 1.3rem; }
-  figure.diagram img { display: block; max-width: 100%; height: auto; background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: .5rem; box-sizing: border-box; }
-  figure.diagram figcaption { margin-top: .35rem; color: var(--muted); font-size: .9em; }
+  /* Diagrams break out of the reading column: the text stays readable,
+     the SVGs get the screen. Click one to see it at full size. */
+  figure.diagram {
+    width: min(94vw, 1760px);
+    margin: 1.4rem 0 1.7rem;
+    margin-left: calc(50% - min(47vw, 880px));
+  }
+  figure.diagram img { display: block; width: 100%; height: auto; background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: .6rem; box-sizing: border-box; cursor: zoom-in; }
+  figure.diagram figcaption { margin-top: .4rem; color: var(--muted); font-size: .9em; text-align: center; }
+  figure.diagram figcaption .hint { color: var(--accent); }
+
+  .zoom { position: fixed; inset: 0; z-index: 50; background: rgba(255,255,255,.97); overflow: auto; padding: 3.5rem 1rem 2rem; }
+  .zoom[hidden] { display: none; }
+  .zoom img { display: block; margin: 0 auto; max-width: none; background: #fff; }
+  .zoom-close { position: fixed; top: .8rem; right: 1rem; font: 1.4rem/1 system-ui, sans-serif; padding: .35rem .7rem; cursor: pointer; background: #fff; color: var(--fg); border: 1px solid var(--rule); border-radius: 4px; }
+  .zoom-close:hover { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
@@ -65,9 +78,11 @@
 
 <h2 id="sec-1">1. System overview</h2>
 
-<p>Typhoon is a single Rust binary that observes an operator's work with an LLM agent, mines that work for repeated patterns, and routes high-value patterns through a forge loop that produces reusable command-line tools. Dream writes proposal briefs; the forge hardens each brief into a requirement and implementation; the operator ratifies. The runtime never synthesizes source itself.</p>
+<p>Typhoon is a Rust-only agent runtime that observes an operator's work with an LLM agent, mines that work for repeated patterns, and routes high-value patterns through a forge loop that produces reusable command-line tools. Dream writes proposal briefs; the forge hardens each brief into a requirement and implementation; the operator ratifies. The runtime never synthesizes source itself.</p>
 
-<p>The single-binary form is deliberate, but it does not mean a single process. One compiled artifact gives one install path, one upgrade story, one audit surface, and no client/server version skew — interactive commands, daemon entry points, scheduled dream runs, and proposal ratification all dispatch through the same compiled artifact. The subcommands share too much code (dream phases, signal capture, path lint, proposal flow) for splitting into multiple binaries to pay for itself in a single-user tool. This follows the <code>git</code> / <code>docker</code> / <code>cargo</code> model: one binary, many subcommands, daemon and one-shot modes side by side.</p>
+<p>The single-binary form is deliberate, but it does not mean a single process. Nor does it mean a single crate: §2.5 partitions the source into roughly eight workspace crates, and those boundaries — not the artifact count — are what the design actually constrains. One compiled artifact gives one install path, one upgrade story, and one audit surface; interactive commands, daemon entry points, scheduled dream runs, and proposal ratification all dispatch through it. The subcommands share too much code (dream phases, signal capture, path lint, proposal flow) for splitting into multiple binaries to pay for itself in a single-user tool. This follows the <code>git</code> / <code>docker</code> / <code>cargo</code> model: one binary, many subcommands, daemon and one-shot modes side by side.</p>
+
+<p>Two limits on that claim are worth stating, because the choice is weaker than it first sounds. First, <strong>it is a packaging decision, not an architectural invariant</strong> — the language does not imply it, and emitting several <code>[[bin]]</code> targets from the same crate graph would change no boundary in §2.1–§2.6. Second, <strong>one executable does not by itself eliminate version skew</strong>: §2.3's deployment model lets an admin reach the same database from more than one machine, so two hosts can run different builds. What actually prevents skew is deploying the hosts together, which is release discipline rather than a property of the artifact. The single-executable form is kept for install and upgrade simplicity; the DLD may revisit it without disturbing the rest of this document.</p>
 
 <p>At runtime, multiple processes of that binary coexist, divided into two planes by whether they go through core.</p>
 
@@ -85,7 +100,7 @@
 
 <p>Three architectural principles run through everything below. First, <strong>tools are the artifact</strong> — the tool registry (TursoDB rows + binaries in <code>~/.typhoon/bin/</code>, reconciled by checksum and filesystem locks) is the system's central artifact store, and every other piece of the lifecycle exists to grow it safely. The registry is fronted by a shared access module — a library, not a process — so both core (for runtime tool lookup during dispatch) and the tool manager CLI (for operator-driven CRUD) read and write through one place; schema knowledge and registry invariants live in this module rather than being re-implemented per consumer. Second, <strong>core dispatches; the recorder records; only core can drive the recorder</strong> — every process that <em>uses</em> Typhoon (the gateway worker loop, the use-plane CLI subcommands <code>typhoon signal record</code> / <code>typhoon memory query</code>, scheduled use triggers) routes through core, and only core tells the signal recorder to write. The gateway edge loop never calls core: it only talks to external channel services and the durable channel queue. The recorder is a separate component, the sole writer to the signal store; adapters and the scheduler adapt or trigger but never invoke the recorder directly. Anything that bypasses core produces no signal. This split — use plane through core, management plane around it, external channel ingress through a durable queue — is the structuring rule for the runtime and shows up directly in §2.</p>
 
-<p>Third, <strong>tools are shared; per-persona data is isolated</strong>. A single tool registry serves every persona — when one persona's signals motivate a tool, every persona benefits once an admin approves. Signals, memory, and persona-attribute proposals are scoped per <code>persona_slug</code>; cross-persona reads are a privacy bug. Storage shape is one shared store per concept (one <code>signals</code> table, one <code>memories</code> table, one <code>persona_proposals</code> table), with rows tagged by <code>persona_slug</code>; per-persona isolation is enforced by state APIs that take the slug and filter every read and write — no per-persona queues or partitioned tables. Dream is the deliberate exception: its scan reads across all personas so cross-persona pattern overlap can become evidence for a shared tool. The <code>admin</code> role on the owning user is the gate on tool ratification and registry mutations; <code>author</code>-role processes contribute signals and consume memory and tools, nothing more. The persona row itself lives in persona-core's schema; persona-core writes it through direct user edits (web SPA / CLI), and Typhoon writes it only through approved persona proposals. This per-persona / shared / per-user split lives in S5's data-access libraries (§2.4) and is checked at gateway worker-loop resolution and management-command entry; the rest of the architecture is identity-agnostic.</p>
+<p>Third, <strong>tools are shared; per-persona data is isolated</strong>. A single tool registry serves every persona — when one persona's signals motivate a tool, every persona benefits once an admin approves. Signals, memory, and persona-attribute proposals are scoped per <code>persona_slug</code>; cross-persona reads are a privacy bug. Storage shape is one shared store per concept (one <code>signals</code> table, one <code>memories</code> table, one <code>persona_proposals</code> table), with rows tagged by <code>persona_slug</code>; per-persona isolation is enforced by state APIs that take the slug and filter every read and write — no per-persona queues or partitioned tables. Dream is the deliberate exception, and it is narrow: cross-persona reads exist only through a dedicated signal-scan API, and only to discover runtime-scoped CLI patterns and record their minimised provenance, so that cross-persona pattern overlap can become evidence for a shared tool. Dream's other outputs are input-closed — when it writes a memory or drafts a persona proposal, both the evidence and the row belong to one persona. §2.6 states the full rule. The <code>admin</code> role on the owning user is the gate on tool ratification and registry mutations; <code>author</code>-role processes contribute signals and consume memory and tools, nothing more. The persona row itself lives in persona-core's schema; persona-core writes it through direct user edits (web SPA / CLI), and Typhoon writes it only through approved persona proposals. This per-persona / shared / per-user split lives in S5's data-access libraries (§2.4) and is checked at gateway worker-loop resolution and management-command entry; the rest of the architecture is identity-agnostic.</p>
 
 <p>The tool manager is firmly on the management plane: it operates directly on proposals and the registry and never goes through core, because managing tools is meta, not use. Dream is also management plane — it is a standalone batch process that reads accumulated signals and writes proposals and memories. The two are complements: core feeds the signal table by recording use; dream drains it into the proposal queue; the tool manager ratifies approved results into the registry.</p>
 
@@ -120,7 +135,7 @@
 <p>The operator submits the delivery back through the tool manager with <code>typhoon tool propose submit &lt;id&gt; --requirements &lt;file&gt; --tool-doc &lt;tool.md&gt; --source &lt;file&gt; [--tests &lt;file&gt;]</code>. On submission, Typhoon attaches the hardened requirement, <code>tool.md</code>, source, optional tests, declared dependencies, and forge correctness argument to the existing <code>cli_proposals</code> row, then runs the hardcoded-path lint. A failed path lint is fatal and bounces the proposal. Tier is not mechanically verified in v0.1; Dream's rough tier and the forge's revised tier are reviewed by the operator from the brief, requirement, <code>tool.md</code>, source, dependencies, and correctness argument. On pass the proposal advances to <code>awaiting_user</code>. No tool-registry row is created at submit time; unfinished or unapproved forge work is proposal data, not an installed CLI.</p>
 <p>The operator reviews the proposal brief, hardened requirement, <code>tool.md</code>, delivery, tests, and forge correctness argument together via the tool manager (<code>typhoon tool propose approve | reject</code>). Approval is the first point where a CLI enters the tool registry: the registry row is inserted, the tool binary is installed, the reviewed <code>tool.md</code> descriptor is stored on the active tool-registry row, and — for a replacement — the predecessor is moved into <code>.history/</code>. Approval writes no memory. The callable LLM surface comes from the registry-backed <code>tool.md</code> manifest; a shared tool has no single persona whose memory could own it, so discoverability is the registry's job (see §2.6). Per-persona memory about a tool is written later, by the normal recording path, once that persona has actually used it. The DB part is protected by a TursoDB transaction; the filesystem part is protected by the registry mutation protocol in §2.3. Persona proposals follow the same pattern with one substitution: the artifact is a persona-attribute value (one of <code>expression</code>, <code>mental_models</code>, <code>heuristics</code>, <code>antipatterns</code>, <code>limits</code> on the persona row) rather than a tool binary, and the atomic write updates persona-core's <code>persona</code> row instead of the filesystem. A pattern rejected three times stops dream from re-proposing it.</p>
 <p>After approval, the next lifecycle step is simply more online interaction. The installed CLI is shared through the registry, surfaced to the LLM through its reviewed <code>tool.md</code> descriptor, optionally reinforced by memory retrieval, invoked as an ordinary subprocess on PATH, and measured by use/success counters. Those counters become future signals for Dream: a rising error rate can lead to a replacement proposal, and prolonged disuse can lead to a deprecation proposal. Operator-driven tool management is not a separate lifecycle stage; it is the management surface available throughout the loop for proposal review, installed-tool inspection, disable/enable, rollback, delete, purge, promote, dependency checks, and sync.</p>
-<p>The tool manager (<code>typhoon tool</code>) is the admin's direct, agent-independent control surface for proposal ingestion and the installed-tool registry, covering the entire lifecycle through one unified namespace. Every mutating <code>typhoon tool</code> subcommand requires <code>user.role='admin'</code>; non-admin processes can use installed tools but cannot mutate proposals or the registry. The ingestion half (<code>tool propose list / show / submit / approve / reject</code>) is what stage 4 invokes. <code>list</code>, <code>show</code>, and <code>submit</code> operate on <code>cli_proposals</code>; only <code>approve</code> creates or updates a registry row. The operations half acts on already-installed tools: read-only listing, inspection, and lineage (<code>tool list</code> with filters by tier or staleness, <code>tool show</code> for source/stats/origin, <code>tool diff</code> and <code>tool history</code> for version comparison) and state-changing commands (<code>tool disable</code> takes a tool off PATH while keeping the registry row; <code>tool enable</code> reverses it; <code>tool rollback</code> restores the previous version from <code>.history/</code>; <code>tool delete</code> marks the registry row <code>deleted</code> (retained for lineage and <code>tool history</code>) and archives the binary; <code>tool purge</code> hard-deletes the registry row and clears <code>.history/</code>; <code>tool promote</code> adopts a hand-written script the operator authored outside the dream loop and adds it as <code>approved_by='user'</code> with no origin proposal; <code>tool check-deps</code> scans declared external dependencies across the registry; <code>tool sync</code> reconciles installed binaries from approved registry rows on the current machine). Every installed-tool state change uses the registry mutation protocol so the DB row, checksum, and on-disk executable can be reconciled. Broader inspection paths are read-only: <code>typhoon sql</code> for SELECT queries, <code>typhoon dream stats</code> for the proposal funnel, and <code>typhoon health</code> for gateway/cron liveness and queue backlog. <code>typhoon sql</code> accepts SELECT only; writes (INSERT / UPDATE / DELETE / DDL) are hard-rejected so the inspection path can never accidentally mutate state.</p>
+<p>The tool manager (<code>typhoon tool</code>) is the admin's direct, agent-independent control surface for proposal ingestion and the installed-tool registry, covering the entire lifecycle through one unified namespace. Every mutating <code>typhoon tool</code> subcommand requires <code>user.role='admin'</code>; non-admin processes can use installed tools but cannot mutate proposals or the registry. The ingestion half (<code>tool propose list / show / submit / approve / reject</code>) is what stage 4 invokes. <code>list</code>, <code>show</code>, and <code>submit</code> operate on <code>cli_proposals</code>; only <code>approve</code> creates or updates a registry row. The operations half acts on already-installed tools: read-only listing, inspection, and lineage (<code>tool list</code> with filters by tier or staleness, <code>tool show</code> for source/stats/origin, <code>tool diff</code> and <code>tool history</code> for version comparison) and state-changing commands (<code>tool disable</code> takes a tool off PATH while keeping the registry row; <code>tool enable</code> reverses it; <code>tool rollback</code> restores the previous version from <code>.history/</code>; <code>tool delete</code> marks the registry row <code>deleted</code> (retained for lineage and <code>tool history</code>) and archives the binary; <code>tool purge</code> hard-deletes the registry row and clears <code>.history/</code>; <code>tool promote</code> adopts a hand-written script the operator authored outside the dream loop and adds it as <code>approved_by='user'</code> with no origin proposal; <code>tool check-deps</code> scans declared external dependencies across the registry; <code>tool sync</code> reconciles the current machine against approved registry rows). The v0.1 <code>tool sync</code> contract is deliberately small: for each approved active row whose binary is missing or whose checksum does not match, re-materialise it from the source stored on the row — script languages are written back and made executable, compiled languages are built with the local toolchain if one is present and reported as skipped if not — then remove unreferenced staging and orphan files. It never mutates registry rows. Building missing artifacts in the background, priority-ordered by use count, is a v0.2 concern, not part of this command in v0.1. Every installed-tool state change uses the registry mutation protocol so the DB row, checksum, and on-disk executable can be reconciled. Broader inspection paths are read-only: <code>typhoon sql</code> for SELECT queries, <code>typhoon dream stats</code> for the proposal funnel, and <code>typhoon health</code> for gateway/cron liveness and queue backlog. The funnel includes a <em>stale-unforged</em> count — proposals still <code>awaiting_forge</code> beyond <code>forge.proposal_ttl_days</code>. It is derived at query time from row age, never a stored status: §3.1's status set is total, and an un-forged proposal ageing past the threshold is an operator signal to review the forge backlog, not a lifecycle event. Nothing auto-rejects or auto-closes. <code>typhoon sql</code> accepts SELECT only; writes (INSERT / UPDATE / DELETE / DDL) are hard-rejected so the inspection path can never accidentally mutate state.</p>
 
 <h2 id="sec-2">2. Architecture</h2>
 <p>This section describes Typhoon's architecture through the views needed for detailed design: a layered responsibility map, a module catalog, runtime process and coordination flows, DLD subsystem boundaries, a candidate workspace layout, and a conceptual data view. Together these views define what each part owns, which boundaries must stay explicit, and where the DLD is allowed to refine implementation shape without changing the HLD contract.</p>
@@ -642,11 +657,12 @@
 
 <p>The 3-strike rule in §3.1 and the replacement check in stage 3 both depend on a stable answer to "is this the same pattern as last time?". That identity is not otherwise modelled anywhere in this design, and getting it wrong silently disables the guard rather than failing loudly, so it is fixed here.</p>
 
-<p>A CLI proposal carries a <strong><code>pattern_key</code></strong>: a version-prefixed digest computed <em>deterministically, by code, from the structure of the originating signal chain</em> — the proposal kind (<code>new</code> / <code>replace</code> / <code>extend</code> / <code>deprecate</code>), the target tool id for anything other than <code>new</code>, and the normalised step skeleton of the workflow. The LLM writes the brief; it does not compute or influence the key.</p>
+<p>A CLI proposal carries a <strong><code>pattern_key</code></strong>: a version-prefixed digest computed <em>deterministically, by code, from the structure of the originating signal chain</em> — the proposal kind (<code>new</code> / <code>replace</code> / <code>extend</code> / <code>deprecate</code>), the target tool id for anything other than <code>new</code>, and — for the three kinds that originate in a workflow — the normalised step skeleton of that workflow. The LLM writes the brief; it does not compute or influence the key.</p>
 
 <ul>
   <li><strong>Excluded from the key, without exception:</strong> <code>persona_slug</code>, <code>user_id</code>, signal or session ids, frequency, dates, ROI scores, the CLI name dream suggests, and any interface detail the forge may still revise. Including any of these makes the same workflow hash differently depending on who performed it or when, which quietly defeats the 3-strike guard.</li>
-  <li><strong>Target identity uses the registry tool id, not the tool name.</strong> Names can change; lineage must not.</li>
+  <li><strong>Target identity uses the registry tool id, not the tool name.</strong> Names can change; lineage must not. This holds wherever a tool is referenced durably — the <code>replaces:</code> pointer, lineage rows, and the key itself. A command line may still accept a name; resolution to an id happens at that boundary, and only the id is stored.</li>
+  <li><strong><code>deprecate</code> keys on <code>(kind, target_tool_id)</code> alone.</strong> A deprecation is motivated by prolonged disuse, not by a workflow, so there is no step skeleton to fold in. This also gives the guard the behaviour it should have: repeatedly proposing retirement of the same tool is the same pattern, and three rejections stop it, while retiring a <em>different</em> tool is a different pattern.</li>
   <li><strong>The key is version-prefixed</strong> (<code>v1:</code>, <code>v2:</code>, …). Changing the fingerprint algorithm mints new keys and leaves historical rejections readable. The accepted cost is that a concept may be re-proposed once after an algorithm change; the rejected alternative is a key-version mapping table, which would pay schema cost now for an algorithm that does not exist yet.</li>
   <li><strong>Semantic similarity may attach a candidate to an existing key before insert, but never resolves identity after the fact.</strong> A same-key lookup that misses is a new pattern. Any similarity-based merge is a pre-insert decision with fixture-backed rules — correctness must not depend on a probabilistic second pass.</li>
   <li><strong>At most one open proposal per <code>pattern_key</code>.</strong> The same key is also part of the deep-phase idempotency key, so a cancelled, retried, or stale-taken-over dream run cannot enqueue the same pattern twice.</li>
@@ -663,7 +679,7 @@
 
 <h3 id="sec-3-1">3.1 Tool proposal status (<code>cli_proposals.status</code>)</h3>
 
-<p>The tool proposal moves through a small linear state space. Approval emits a registry mutation and closes the proposal in the same database transaction; any binary install or archival follows the registry mutation protocol from §2.3. Rejection is the only branch that can recur; after the third rejection carrying the same <code>pattern_key</code>, dream is forbidden from drafting another proposal for that pattern. Note the distinction §2.6 draws: a <em>signal cluster</em> is a transient artifact of one REM phase, whereas a <em>pattern</em> is the durable cross-run identity given by <code>pattern_key</code>. The guard is keyed on the latter — keying it on a cluster, which varies with the scan window, would mint a fresh identity on every run and disable the rule.</p>
+<p>The tool proposal moves through a small state space — the same four statuses for every proposal, but two entry points and four approval outcomes, because the proposal <em>kind</em> decides how much work stands between the brief and the registry. A <code>new</code>, <code>replace</code>, or <code>extend</code> brief needs source, so it enters at <code>awaiting_forge</code> and reaches <code>awaiting_user</code> only through <code>tool propose submit</code>. A <code>deprecate</code> brief has nothing to forge — it asks to retire an installed tool on the evidence of prolonged disuse — so it enters at <code>awaiting_user</code> directly and <code>submit</code> is rejected for it. This mirrors persona proposals, which skip forge for the same reason: the artifact is a decision, not a binary. Approval emits a registry mutation and closes the proposal in the same database transaction; any binary install or archival follows the registry mutation protocol from §2.3. Rejection is the only branch that can recur; after the third rejection carrying the same <code>pattern_key</code>, dream is forbidden from drafting another proposal for that pattern. Note the distinction §2.6 draws: a <em>signal cluster</em> is a transient artifact of one REM phase, whereas a <em>pattern</em> is the durable cross-run identity given by <code>pattern_key</code>. The guard is keyed on the latter — keying it on a cluster, which varies with the scan window, would mint a fresh identity on every run and disable the rule.</p>
 
 <figure class="diagram">
   <img src="diagrams/svg/state-proposal.svg" alt="Tool proposal status state diagram">
@@ -673,7 +689,14 @@
 <p><strong>Invariants enforced by this machine:</strong></p>
 <ul>
   <li>The set <code>{awaiting_forge, awaiting_user, approved, rejected}</code> is total — no NULL, no other values. SQL CHECK is defense-in-depth.</li>
-  <li>The transition <code>awaiting_user → approved</code> is wrapped in <code>BEGIN IMMEDIATE … COMMIT</code> together with the registry insert/update, reviewed <code>tool.md</code> storage, and proposal status flip. No memory write participates in this transaction (§2.6). Filesystem install or archival follows the registry mutation protocol from §2.3.</li>
+  <li>The transition <code>awaiting_user → approved</code> is wrapped in <code>BEGIN IMMEDIATE … COMMIT</code> together with the proposal status flip and whichever registry mutation the kind calls for. No memory write participates in this transaction (§2.6). Filesystem work follows the registry mutation protocol from §2.3. The four outcomes:
+    <ul>
+      <li><code>new</code> — registry insert including the reviewed <code>tool.md</code> body; binary installed.</li>
+      <li><code>replace</code> / <code>extend</code> — registry lineage update and <code>tool.md</code> column update; predecessor archived to <code>.history/</code> and the new binary installed. An <code>extend</code> is a replacement whose motivation is an interface addition rather than a defect, so it takes the same path and also lands the predecessor in <code>superseded</code>.</li>
+      <li><code>deprecate</code> — registry status set to <code>disabled</code> and the binary archived. No <code>tool.md</code> is written and nothing is installed, because no new artifact exists.</li>
+    </ul>
+  </li>
+  <li>Entry point is fixed by kind: <code>new</code> / <code>replace</code> / <code>extend</code> start at <code>awaiting_forge</code>; <code>deprecate</code> starts at <code>awaiting_user</code>. <code>tool propose submit</code> is only legal from <code>awaiting_forge</code>, so a <code>deprecate</code> proposal can never acquire source.</li>
   <li>The 3-strike rule is enforced by counting terminal <code>rejected</code> proposals carrying the same <code>pattern_key</code> before dream creates a new proposal — not by a state on this machine, and not by a stored counter. Because <code>rejected</code> is terminal, each proposal contributes at most one rejection, so the count is derivable and cannot drift out of sync with the rows it summarises. The blacklist is a guard on dream, not a status here.</li>
   <li>At most one proposal per <code>pattern_key</code> may be open (<code>awaiting_forge</code> or <code>awaiting_user</code>) at a time. Dream resolves the key, checks for an open proposal, and counts prior rejections inside the same <code>BEGIN IMMEDIATE</code> transaction that inserts the new proposal, so a concurrent or retried run cannot bypass either guard.</li>
   <li>A path-lint failure on submit does not advance state; the proposal stays <code>awaiting_forge</code> and the operator submits again with corrected source.</li>
@@ -692,7 +715,8 @@
 <p><strong>Invariants enforced by this machine:</strong></p>
 <ul>
   <li>Every transition that involves a filesystem operation follows the registry mutation protocol from §2.3: TursoDB transaction, per-tool filesystem lock, staging path, checksum, atomic rename, and sync-based repair of crash leftovers.</li>
-  <li><code>superseded</code> is reachable only via approval of a proposal carrying <code>replaces:&lt;name&gt;</code>; same pattern, no auto-supersede.</li>
+  <li><code>superseded</code> is reachable only via approval of a proposal carrying <code>replaces:&lt;tool_id&gt;</code> (kind <code>replace</code> or <code>extend</code>); same pattern, no auto-supersede. The pointer is the registry tool id, not the tool name — names may change, lineage may not (§2.6).</li>
+  <li><code>disabled</code> has two legal predecessors, and they are different acts: <code>tool disable</code> is an admin taking a tool off PATH directly, while approval of a <code>deprecate</code> proposal is dream's disuse evidence being ratified. Both land in the same resting state, and <code>tool enable</code> reverses either.</li>
   <li><code>tool rollback</code> stays in <code>active</code> by definition — it swaps which version is the active binary, the state of the tool entity does not change.</li>
   <li><code>deleted</code> retains the registry row and the archived binary; <code>purge</code> is the irreversible terminal transition.</li>
   <li><code>tool promote</code> (operator adopts a hand-written script with no origin proposal) enters this machine at <code>active</code> directly, bypassing §3.1; it is recorded as <code>approved_by='user'</code> with no proposal pointer.</li>
@@ -724,6 +748,57 @@
   <li><strong>3-strike rules are dream-side guards, not states.</strong> The proposal machines have <code>rejected</code> as a normal terminal state; the "blacklist" is a guard inside dream that counts terminal <code>rejected</code> rows before drafting. This keeps the state machines small. Because the count is derived from proposal rows rather than stored in <code>config</code>, lifting a blacklist is an explicit admin action against those rows — the DLD must specify that path (and the retention rule for rejected rows, since purging them would silently lift the guard). There is no counter in <code>config</code> to clear.</li>
   <li><strong>No state machine carries an "in flight" or "processing" intermediate state.</strong> Transitions are instantaneous from the database's point of view (one transaction). If a process holding a transient lock dies, the lock is released and the source state stands.</li>
 </ol>
+
+<div class="zoom" id="zoom" hidden role="dialog" aria-modal="true" aria-label="Diagram at full size">
+  <button type="button" class="zoom-close" id="zoom-close" aria-label="Close full-size diagram">&times;</button>
+  <img id="zoom-img" alt="">
+</div>
+
+<script>
+(function () {
+  var box = document.getElementById('zoom');
+  var img = document.getElementById('zoom-img');
+  var shut = document.getElementById('zoom-close');
+  var opener = null;
+
+  document.querySelectorAll('figure.diagram').forEach(function (fig) {
+    var thumb = fig.querySelector('img');
+    var cap = fig.querySelector('figcaption');
+    if (!thumb) return;
+    thumb.tabIndex = 0;
+    thumb.setAttribute('role', 'button');
+    thumb.title = 'Click to view at full size';
+    if (cap) cap.insertAdjacentHTML('beforeend', ' <span class="hint">Click the diagram to enlarge.</span>');
+    thumb.addEventListener('click', function () { open(thumb); });
+    thumb.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(thumb); }
+    });
+  });
+
+  function open(thumb) {
+    opener = thumb;
+    img.src = thumb.src;
+    img.alt = thumb.alt;
+    box.hidden = false;
+    box.scrollTop = 0;
+    document.body.style.overflow = 'hidden';
+    shut.focus();
+  }
+
+  function close() {
+    box.hidden = true;
+    img.removeAttribute('src');
+    document.body.style.overflow = '';
+    if (opener) { opener.focus(); opener = null; }
+  }
+
+  shut.addEventListener('click', close);
+  box.addEventListener('click', function (e) { if (e.target === box) close(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !box.hidden) close();
+  });
+})();
+</script>
 
 </body>
 </html>

@@ -49,7 +49,7 @@ No skill registry. No system-prompt catalog. No agent-side install.
   Runtime observes tool calls, corrections, outcomes
                        │
                        ▼
-           Recorder writes dream_signals (SQL rows)
+           Recorder writes signals (SQL rows)
                        │
                        ▼   cron readiness check or `typhoon dream --force`
            LIGHT phase  — dedupe, sort signals
@@ -161,9 +161,9 @@ Dream emits a rough tier claim based on which signals the pattern touched. The f
 
 Dream checks existing CLIs before drafting a new brief — by description embedding similarity and by signal-sequence overlap with the origin signals of existing CLIs. Three outcomes:
 
-- **Same semantics** → proposal is a *replacement* (`replaces: <name>`), carries the evidence of what changed in usage; the forge later produces the source diff.
+- **Same semantics** → proposal is a *replacement* (`replaces: <tool_id>`), carries the evidence of what changed in usage; the forge later produces the source diff. The pointer is the registry tool id, never the name — a rename must not break lineage (HLD §2.6).
 - **Name collision** → always treated as a replacement, always reviewed.
-- **Near-duplicate but distinct** → drafted as sibling CLI with a "similar to: `<name>`" note; user decides whether to merge or keep separate.
+- **Near-duplicate but distinct** → drafted as sibling CLI with a "similar to" note carrying the neighbour's tool id; user decides whether to merge or keep separate.
 
 **Replacements never auto-approve, even pure tier.** A pure-function rewrite still changes behavior downstream callers depend on — silently swapping it would break the user's habits.
 
@@ -181,7 +181,7 @@ The brief carries:
 - Rough acceptance hints (examples of success/failure from observed use, not a complete test plan)
 - Evidence (signal clusters that motivated it — context, not a test suite)
 - Rough tier claim + ROI score (frequency × success × sequence length × time span)
-- `replaces:` pointer, if it's a replacement
+- `replaces:` pointer (registry tool id), if it's a replacement
 
 The delivery carries:
 
@@ -212,7 +212,7 @@ A CLI has one of these states at any time:
 | `active` | Installed in `~/.typhoon/bin/`, on `PATH`, callable via its reviewed `tool.md` in the registry-backed manifest; per-persona memory may reinforce it after use, but is not what makes it discoverable |
 | `disabled` | Registry row kept, removed from `PATH`; re-enable any time |
 | `superseded` | Replaced by a newer CLI; source preserved in `.history/`, lineage recorded |
-| `deleted` | Registry row removed; binary archived to `.history/` unless hard-purged |
+| `deleted` | Registry row **retained** with `status='deleted'` for lineage and `tool history`; binary archived to `.history/`. Only `purge` removes the row |
 
 Proposals have their own state machine: `awaiting_forge → awaiting_user → approved | rejected`. A brief lands first (no code); the operator forges externally and submits the hardened requirement, `tool.md`, and source via `typhoon tool propose submit`, which attaches requirement + `tool.md` + source + forge's correctness argument, records declared dependencies and runtime metadata, runs the hardcoded-path lint, and flips to awaiting_user. The operator then reviews the delivery against the brief and approves or rejects.
 
@@ -222,26 +222,41 @@ Proposals have their own state machine: `awaiting_forge → awaiting_user → ap
      signals accumulate
            │
            ▼
-    dream clusters → proposal brief
+    dream clusters → proposal brief (kind: new | replace | extend | deprecate)
            │
-           ▼
-    awaiting_forge
+           ├── kind needs source (new / replace / extend)
+           │        │
+           │        ▼
+           │   awaiting_forge
+           │        │  operator forges externally, submits requirement + source
+           │        ▼
+           │   awaiting_user  (source attached + path lint passed)
            │
-           │  operator forges externally, submits requirement + source
-           ▼
-    awaiting_user  (source attached + path lint passed)
+           └── kind = deprecate (nothing to forge)
+                    │
+                    ▼
+               awaiting_user  (submit is rejected for this kind)
            │
-           ├── approve ──► active
+           ├── approve ──► new: active
+           │               replace / extend: new version active,
+           │                                 predecessor superseded (.history/)
+           │               deprecate: target tool → disabled, binary archived
            │
-           └── reject  ──► rejected  (×3 on same pattern → dream stops proposing)
+           └── reject  ──► rejected  (×3 on same pattern_key → dream stops proposing)
 
     active
      │
-     ├── disable ──► disabled ──── enable ──► active
-     │                 │
-     │                 └── delete
-     │
-     └── dream proposes replacement ──► superseded (.history/)
+     ├── disable ─────────────────► disabled ──── enable ──► active
+     ├── approve deprecate proposal ─┘                │
+     │                                                │
+     ├── rollback (self-loop: swap in a .history/ version)
+     │                                                │
+     └── approve replace/extend ──► superseded ───────┤
+                                                      ▼
+                                     delete ──► deleted  (row kept for lineage,
+                                                 │        binary archived)
+                                                 ▼
+                                     purge  ──► row removed, .history/ cleared
 ```
 
 ### What we track per CLI
@@ -250,7 +265,7 @@ Each registry row holds enough to answer any lifecycle question:
 
 - **Identity**: name, kind (pure/read/mutate), status, description
 - **Body**: hardened requirement, source, language (bash/python/rust/deno/…), runtime (interpreter binary or "compiled"), tests, external dependencies
-- **Origin**: which proposal and signals produced it; which forge synthesized it; whether user- or auto-approved
+- **Origin**: which proposal produced it, the evidence snapshot that motivated it, which forge synthesized it, and whether it arrived by admin approval or by `promote` (`approved_by='user'`). There is no auto-approval path in v0.1
 - **Health**: usage count, success count, last used, recent errors
 - **Lineage**: parent, version, what replaced it
 - **Timestamps**: created, updated
@@ -263,15 +278,15 @@ typhoon tool list --kind pure              # filter by tier
 typhoon tool list --unused --since 30d     # stale candidates
 typhoon tool list --all                    # include disabled + superseded
 
-typhoon tool show <name>                   # source, stats, lineage, origin signals
+typhoon tool show <name>                   # source, stats, lineage, origin evidence snapshot
 typhoon tool diff <name>                   # compare with previous version
 typhoon tool history <name>                # full lineage chain
 
 typhoon tool disable <name>                # off PATH, keep registry row
 typhoon tool enable <name>                 # back on PATH
 typhoon tool rollback <name>               # revert to previous version from .history/
-typhoon tool delete <name>                 # remove registry row, archive binary
-typhoon tool purge <name>                  # hard delete, including .history/
+typhoon tool delete <name>                 # mark deleted (row kept for lineage), archive binary
+typhoon tool purge <name>                  # hard delete: removes the row and clears .history/
 
 typhoon tool promote <path>                # adopt a hand-written script into the registry
 typhoon tool check-deps                    # scan external_deps across all CLIs
@@ -297,7 +312,7 @@ TursoDB is the always-online state store for one Typhoon runtime instance. The r
 Re-materialization depends on what the forge produced:
 
 - **Script languages** (bash, Python, Deno, Node, Ruby…): `typhoon tool sync` writes the source back to `~/.typhoon/bin/`, `chmod +x`, and checks declared dependencies. Near-instant.
-- **Compiled languages** (Rust, Go…): the registry carries the actual source that was forged on machine A. `typhoon tool sync` runs the local toolchain (`cargo build`, `go build`) on that exact source to produce the binary — **no forge re-invocation**, no LLM variability. Background, priority-queued by `use_count`.
+- **Compiled languages** (Rust, Go…): the registry carries the actual source that was forged on machine A. `typhoon tool sync` runs the local toolchain (`cargo build`, `go build`) on that exact source to produce the binary — **no forge re-invocation**, no LLM variability. In v0.1 this is synchronous and skips with a clear error when no toolchain is present; running builds in the background, priority-queued by `use_count`, is deferred to v0.2.
 
 The registry always stores the brief + hardened requirement + forged source. Compiled binaries themselves aren't synced.
 
@@ -333,7 +348,7 @@ Hermes forges skill documents and is now exploring self-evolution of skills, pro
 | Re-implementing Hermes Agent | They forge skills; we forge CLIs. Different artifact, same loop |
 | Cloudflare Workers / browser target | CLI product; wrong substrate |
 | YAML / JSON config files | Files rot, self-modify is fragile, SQL is the config |
-| Python / Node runtime for **Typhoon itself** | Bloat, slow startup, single binary wins. (Generated CLIs may use any language the forge picks.) |
+| Python / Node runtime for **Typhoon itself** | Bloat, slow startup, and an interpreter the operator must install and keep matching. (Generated CLIs may use any language the forge picks.) |
 
 ---
 
@@ -341,7 +356,7 @@ Hermes forges skill documents and is now exploring self-evolution of skills, pro
 
 | Layer | Choice | Why |
 |---|---|---|
-| Typhoon runtime | Rust 2021 | Single binary, predictable latency, good WASM story later |
+| Typhoon runtime | Rust 2021 | No interpreter to install, predictable latency, good WASM story later. (Rust does not dictate the artifact count; one executable with subcommands is v0.1's packaging choice — HLD §1.) |
 | DB | TursoDB / libSQL client | Always-online SQL state store; one Typhoon runtime instance owns one DB |
 | Channel | Telegram (primary); external-agent CLI (Codex, Claude Code, Cursor…) for the operator | Telegram = always-on + multi-device free; external-agent path uses one-shot subcommands, no REPL needed |
 | Online LLM (agent) | Cloud frontier (Claude Sonnet 4.6 / GPT-5 / GLM 5.1) | Quality per turn matters |

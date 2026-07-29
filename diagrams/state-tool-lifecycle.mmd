@@ -2,8 +2,9 @@ stateDiagram-v2
     [*] --> active : tool propose approve
     [*] --> active : tool promote
     active --> disabled : tool disable
+    active --> disabled : tool propose approve [kind = deprecate]
     disabled --> active : tool enable
-    active --> superseded : tool propose approve [replacement]
+    active --> superseded : tool propose approve [kind = replace | extend]
     active --> active : tool rollback
     active --> deleted : tool delete
     disabled --> deleted : tool delete
@@ -15,7 +16,11 @@ stateDiagram-v2
         counters increment here.
         Dream may propose replacement
         (rising error rate) or
-        deprecation (prolonged disuse).
+        deprecation (prolonged disuse);
+        an approved deprecate proposal
+        lands the tool in disabled, the
+        same resting state tool disable
+        reaches by admin action.
         tool rollback is a self-loop:
         active version swaps with
         a predecessor from .history/.

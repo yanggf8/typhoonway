@@ -1,5 +1,6 @@
 stateDiagram-v2
-    [*] --> awaiting_forge : dream creates proposal brief
+    [*] --> awaiting_forge : dream creates brief [kind = new | replace | extend]
+    [*] --> awaiting_user : dream creates brief [kind = deprecate]
     awaiting_forge --> awaiting_user : tool propose submit [requirements + tool.md + source + path lint pass]
     awaiting_forge --> awaiting_forge : tool propose submit [path lint fails]
     awaiting_user --> approved : tool propose approve
@@ -12,15 +13,22 @@ stateDiagram-v2
         On submit: attach hardened
         requirement, tool.md, source, optional tests,
         dependencies, and correctness argument.
+        deprecate briefs skip forge: there is
+        no source to harden, so they enter
+        awaiting_user directly and submit is
+        rejected for them.
     end note
 
     note right of approved
-        DB transaction:
-        registry insert + reviewed tool.md
-        + proposal status flip.
-        No memory write participates.
-        Binary install follows
-        registry mutation protocol.
+        Side effects branch on kind.
+        new: registry insert + tool.md + install.
+        replace / extend: lineage update +
+        tool.md + swap, predecessor to .history/.
+        deprecate: registry status -> disabled +
+        archive binary; no tool.md, no install.
+        All in one DB transaction; no memory
+        write participates. Filesystem work
+        follows the registry mutation protocol.
     end note
 
     note left of rejected
