@@ -3,8 +3,8 @@ stateDiagram-v2
     pending --> approved : persona approve
     pending --> rejected : persona reject
     approved --> [*]
-    rejected --> [*] : rejection_count < 3
-    rejected --> [*] : rejection_count = 3 (column blacklisted)
+    rejected --> [*] : rejected count for (persona_slug, column) < 3
+    rejected --> [*] : rejected count for (persona_slug, column) = 3 (column blacklisted)
 
     note right of approved
         Atomic transaction:
@@ -14,7 +14,8 @@ stateDiagram-v2
 
     note left of rejected
         Blacklist is per
-        (persona_slug, attribute_column)
-        and enforced as a dream-side
-        guard, not a state.
+        (persona_slug, attribute_column),
+        enforced as a dream-side guard by
+        counting terminal rejected rows.
+        Derived, not stored.
     end note

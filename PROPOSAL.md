@@ -78,7 +78,8 @@ No skill registry. No system-prompt catalog. No agent-side install.
                        │
                        ▼
     Artifact lands in ~/.typhoon/bin/<name>, chmod +x, added to PATH.
-    Seed memory written: "You built <name>. It does X. Use when Y."
+    Reviewed tool.md stored on the registry row — that, not memory,
+    is what makes the tool callable for every persona.
                        │
                        ▼
     Next session: core surfaces the tool through the registry-backed tool manifest; memory may add context.
@@ -102,7 +103,7 @@ The persona row *is* the soul. The "soul proposals" concept from earlier drafts 
 What's per-X vs. shared:
 
 - **Shared across the whole runtime.** The tool registry. When one persona's signals motivate a tool, every persona benefits once an admin approves. Tools are the artifact; sharing is the point.
-- **Per-persona.** Signals, memory, persona-attribute proposals. Tagged by `persona_slug`; cross-persona reads are a privacy bug. Dream is the deliberate exception — it scans across all personas so cross-persona pattern overlap can become evidence for a shared tool.
+- **Per-persona.** Signals, memory, persona-attribute proposals. Tagged by `persona_slug`; cross-persona reads are a privacy bug. Dream is the deliberate exception, and the exception is narrow: it may scan signals across personas *only* to discover shared-tool patterns and draft CLI proposals, so that cross-persona pattern overlap can become evidence for a shared tool. Dream's other two outputs stay closed within one persona — when it writes a memory or drafts a persona proposal, both the evidence it reasons from and the row it writes belong to that same persona. v0.1 additionally assumes a single-admin deployment in which the admin may read the cross-persona evidence attached to a CLI proposal; graduated per-persona sharing controls are deferred. HLD §2.6 is authoritative for the full rule.
 - **Per-user.** OAuth identity, role, audit trail. These live in persona-core's tables and are not duplicated.
 
 Identity flow per channel turn. Typhoon does not authenticate users itself — persona-core's OAuth layer authenticates the human; the bot token authenticates the bot. The runtime resolves a channel message to *(user, persona)* in two steps:
@@ -166,7 +167,7 @@ Dream checks existing CLIs before drafting a new brief — by description embedd
 
 **Replacements never auto-approve, even pure tier.** A pure-function rewrite still changes behavior downstream callers depend on — silently swapping it would break the user's habits.
 
-On approval of a replacement, the old binary moves to `~/.typhoon/bin/.history/<name>.<timestamp>`. `typhoon tool rollback <name>` reverts. The whole swap is atomic — backup, replace, registry update, reviewed `tool.md` update, and context seed-memory update all succeed together or none do.
+On approval of a replacement, the old binary moves to `~/.typhoon/bin/.history/<name>.<timestamp>`. `typhoon tool rollback <name>` reverts. The whole swap is atomic — backup, replace, registry update, and reviewed `tool.md` update all succeed together or none do.
 
 ### Human in the loop
 
@@ -193,7 +194,7 @@ The delivery carries:
 
 Approval means the operator is satisfied with the delivery against the brief, the hardened requirement, and the LLM-facing `tool.md`. Typhoon runs the hardcoded-path lint and records metadata, but it does not judge correctness — that's the forge's job and the operator's call.
 
-Three rejections on the same pattern (or the same replacement) stops dream from re-proposing it — same 3-strike rule as persona proposals.
+Three rejections on the same pattern stops dream from re-proposing it — same 3-strike rule as persona proposals. "Same pattern" is not a judgement call: every CLI proposal carries a `pattern_key` derived deterministically from the workflow structure, the proposal kind, and the target tool id, so a replacement of tool X is a different pattern from a new tool, and the same workflow observed under a different persona or in a different week is the same pattern. HLD §2.6 fixes what may and may not enter that key.
 
 ---
 
@@ -208,7 +209,7 @@ A CLI has one of these states at any time:
 | State | Meaning |
 |---|---|
 | `proposed` | Draft in `cli_proposals`, awaiting forge (`awaiting_forge`) or operator review (`awaiting_user`) |
-| `active` | Installed in `~/.typhoon/bin/`, on `PATH`, discoverable via memory |
+| `active` | Installed in `~/.typhoon/bin/`, on `PATH`, callable via its reviewed `tool.md` in the registry-backed manifest; per-persona memory may reinforce it after use, but is not what makes it discoverable |
 | `disabled` | Registry row kept, removed from `PATH`; re-enable any time |
 | `superseded` | Replaced by a newer CLI; source preserved in `.history/`, lineage recorded |
 | `deleted` | Registry row removed; binary archived to `.history/` unless hard-purged |

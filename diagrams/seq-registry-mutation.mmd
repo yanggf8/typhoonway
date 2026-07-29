@@ -31,5 +31,5 @@ sequenceDiagram
       Manager->>FS: unlock_tool(tool_name)
       Manager-->>Operator: approval_failed(error)
     end
-    Note over Registry,Queue: BEGIN IMMEDIATE spans registry, reviewed tool.md, seed memory, and proposal status writes.
+    Note over Registry,Queue: BEGIN IMMEDIATE spans registry, reviewed tool.md, and proposal status writes. No memory write participates.
     Note over Manager,FS: DB is source of truth. Crash leftovers are repaired by tool sync.

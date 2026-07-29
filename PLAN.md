@@ -69,10 +69,10 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W13 | Persona proposal flow | W8 | Persona-attribute changes routed through approval queue | S |
 | W14 | `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]` | W12 | Operator can hand hardened requirement + LLM-facing tool descriptor + source back | M |
 | W15 | Hardcoded-path lint | W14 | Obvious absolute paths rejected | S |
-| W16 | Atomic approve (binary + registry + reviewed `tool.md` + seed memory in one tx) | W14, W15 | Approve is all-or-nothing | M |
+| W16 | Atomic approve (binary + registry + reviewed `tool.md` in one tx; no memory write) | W14, W15 | Approve is all-or-nothing | M |
 | W17 | CLI lifecycle commands — list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps, sync | W16 | Full management surface | M |
 | W18 | Replacement flow + `.history/` archival + atomic swap | W16 | Replacement approval swaps cleanly | M |
-| W19 | 3-strike rejection tracking (patterns + replacements) | W12, W18 | Dream stops re-proposing rejected patterns | S |
+| W19 | Deterministic `pattern_key` derivation + 3-strike rejection tracking (patterns + replacements) | W12, W18 | Same workflow yields the same key across personas and runs; dream stops re-proposing rejected patterns; rejection count is derived from terminal `rejected` rows, not stored | M |
 | W20 | Cron scheduler (`typhoon cron`) firing `typhoon dream --catchup` | W12 | Cron checks dream readiness on schedule; full dream fires only when accumulated signal tokens/chains clear thresholds; `--catchup` performs the same readiness check | S |
 | W21 | Telegram channel (`typhoon gateway`) | W10, W6 | Real user interaction flows Telegram → gateway edge loop → channel inbox → gateway worker loop → core → channel outbox → Telegram, and lands in signals | L |
 | W22 | Keepers — `typhoon health`, `typhoon dream stats`, CLI health metrics in `typhoon tool show` | W20 | Observability wired | M |
@@ -190,6 +190,10 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M4-07 | Run `typhoon dream` non-interactively while a live run exists | Prints status and exits ≠ 0 so cron treats the overlap as deferred |
 | TC-M4-08 | Mark a live `dream_runs` row stale, then run `typhoon dream` | Old row becomes `timed_out` with `ended_at`; new run row is inserted; stale process writes using the old `run_id` are rejected |
 | TC-M4-09 | Deep-phase LLM adapter hangs past remaining runtime | Request times out; run becomes `timed_out`; heartbeat stops; no partial findings from the failed call are written |
+| TC-M4-10 | Seed the same workflow under personas `a` and `b`, in two dream runs a week apart | One `cli_proposals` row, not two: `pattern_key` is identical across personas and runs; evidence records both personas; the row carries no `persona_slug` |
+| TC-M4-11 | Same as TC-M4-10, then inspect memory and `persona_proposals` | Every memory row and persona proposal is tagged with exactly one `persona_slug`; none mixes evidence from the other persona |
+| TC-M4-12 | Cancel a dream run after the deep phase enqueued a proposal, then re-run | The pattern is not enqueued twice; `pattern_key` participates in the deep-phase idempotency key |
+| TC-M4-13 | Enqueue a proposal, prune its origin signals, then read the proposal | Brief, evidence snapshot, frequency, and ROI are unchanged and still reviewable with the signal rows gone |
 
 ### 5.5 M5 — First CLI lives
 
@@ -198,12 +202,13 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M5-01 | `typhoon tool propose submit <id> --requirements req.md --tool-doc tool.md --source cli.sh --tests test.sh` | Proposal stores hardened requirement + `tool.md` + source + tests and flips `awaiting_forge → awaiting_user` |
 | TC-M5-02 | Submit source without `--requirements` or `--tool-doc` | Exit ≠ 0; proposal remains `awaiting_forge` |
 | TC-M5-03 | Submit source containing `/home/yanggf/project` | Exit ≠ 0; lint rejects hardcoded path |
-| TC-M5-04 | `typhoon tool propose approve <id>` on clean proposal | Binary in `~/.typhoon/bin/<name>`; `tool.md` in registry/artifact metadata; `cli_artifacts` row; seed memory written — all in one transaction |
-| TC-M5-05 | Approve where binary write fails (inject fault) | No partial state: no registry row, no memory, no binary |
+| TC-M5-04 | `typhoon tool propose approve <id>` on clean proposal | Binary in `~/.typhoon/bin/<name>`; `tool.md` in registry/artifact metadata; `cli_artifacts` row — all in one transaction. No memory row is written by approval |
+| TC-M5-05 | Approve where binary write fails (inject fault) | No partial state: no registry row, no binary |
 | TC-M5-06 | `typhoon tool disable foo` | Binary removed from PATH; registry row retained with `status='disabled'` |
 | TC-M5-07 | `typhoon tool rollback foo` after replacement | Previous version restored from `.history/`; current version archived |
 | TC-M5-08 | Approve replacement proposal | Old binary → `.history/<name>.<ts>`; new binary active; registry lineage updated; all atomic |
-| TC-M5-09 | Reject same pattern 3 times | Fourth dream run produces no proposal for that pattern |
+| TC-M5-09 | Reject same pattern 3 times | Fourth dream run produces no proposal for that `pattern_key`; the guard reads a count of terminal `rejected` rows, with no stored counter to drift |
+| TC-M5-12 | Open a second proposal for a `pattern_key` that already has one `awaiting_forge` | Rejected; at most one open proposal exists per `pattern_key` |
 | TC-M5-10 | `typhoon tool promote /usr/local/bin/myscript --tool-doc tool.md` | Registry row created with `approved_by='user'`, reviewed `tool.md`, no origin proposal |
 | TC-M5-11 | `typhoon tool check-deps` with a CLI needing missing `jq` | Warns; install path would block if attempted |
 
@@ -237,6 +242,8 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-XC-03 | `typhoon sql "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'skill%'"` | Returns 0 rows (no `skills`, `skill_triggers`, or `skill_proposals` tables) |
 | TC-XC-04 | Insert into `config` with `type='float'`, value `'abc'` | CHECK constraint rejects |
 | TC-XC-05 | `typhoon skill list` | Exit ≠ 0; command does not exist |
+| TC-XC-06 | Read signals, memory, and persona proposals for persona `a` through the per-persona data-access APIs while persona `b` has data | No row belonging to `b` is ever returned; no general-purpose `read_all` exists on any per-persona store |
+| TC-XC-07 | Grep the data-access surface for a cross-persona read outside dream's signal-scan API | Only the dream signal scan can span personas; memory and persona-proposal APIs have no cross-persona entry point |
 
 ### 5.9 v0.1 is done when
 
@@ -272,7 +279,7 @@ These apply throughout the project. Each phase must not violate them. See `CLAUD
 5. **Skills are not a concept.** No `skills`, `skill_triggers`, or `skill_proposals` tables. No `typhoon skill *` commands. CLIs are the only artifact.
 6. **Typhoon does not write code.** Forge writes code; Typhoon writes proposal briefs and catalogs deliveries.
 7. **Typhoon does not verify correctness.** Hardcoded-path lint and metadata capture are the only submit-time checks Typhoon performs. Correctness is the forge's responsibility, accepted or rejected by the operator.
-8. **One runtime instance = one TursoDB database (shared with persona-core), serving multiple users with multiple personas.** Typhoon shares a TursoDB cloud database with persona-core. persona-core owns the `user` / `persona` / `audit_log` schema (migrations 001–006, schema-version row `('persona-core', N)`); Typhoon adds its own migrations on top (channel inbox/outbox queue, signal store, memory store, tool registry, proposal queues, daemon state; schema-version row `('typhoon', M)`). One Typhoon runtime instance owns one DB; the same DB can help admins work across machines for forge/review, but a second Typhoon runtime writer is not supported. The DB serves multiple users (auth-bearing humans, OAuth via persona-core — one admin seeded at init, plus authors who join via channel binding) and multiple personas (writer/agent identities owned by users; one user → many personas). Per-persona data (signals, memory, persona-attribute proposals) is scoped by `persona_slug`; tools are shared across all personas; the `role='admin'` user gate enforces ratification and tool-registry mutation; v0.1 maps one Telegram bot account to one persona. External channel I/O is decoupled from Typhoon Way's agent loop through durable queue rows, not an in-memory channel.
+8. **One runtime instance = one TursoDB database (shared with persona-core), serving multiple users with multiple personas.** Typhoon shares a TursoDB cloud database with persona-core. persona-core owns the `user` / `persona` / `audit_log` schema (migrations 001–006, schema-version row `('persona-core', N)`); Typhoon adds its own migrations on top (channel inbox/outbox queue, signal store, memory store, tool registry, proposal queues, daemon state; schema-version row `('typhoon', M)`). One Typhoon runtime instance owns one DB; the same DB can help admins work across machines for forge/review, but a second Typhoon runtime writer is not supported. The DB serves multiple users (auth-bearing humans, OAuth via persona-core — one admin seeded at init, plus authors who join via channel binding) and multiple personas (writer/agent identities owned by users; one user → many personas). Per-persona data (signals, memory, persona-attribute proposals) is scoped by `persona_slug`; tools are shared across all personas, and so are the CLI proposals that produce them — a CLI proposal is runtime-scoped state carrying multi-persona provenance, not per-persona state (HLD §2.6). Dream may read across personas only through its dedicated signal-scan API and only to discover shared-tool patterns; its memory and persona-proposal outputs stay closed within one persona. the `role='admin'` user gate enforces ratification and tool-registry mutation; v0.1 maps one Telegram bot account to one persona. External channel I/O is decoupled from Typhoon Way's agent loop through durable queue rows, not an in-memory channel.
 
 ---
 

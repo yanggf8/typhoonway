@@ -24,13 +24,16 @@ sequenceDiagram
         Dream-->>Trigger: dream_exit(skipped)
       else readiness passes or --force
         Dream->>Lease: set_phase(light)
-        Dream->>Data: read_recent_signals(window)
-        Data-->>Dream: signal_batch
+        Dream->>Data: scan_signals_all_personas(window)
+        Data-->>Dream: signal_batch (rows tagged by persona_slug)
+        Note over Dream,Data: This dream-only scan is the sole cross-persona read. Per-persona APIs offer no read_all.
         Dream->>Lease: poll_cancel()
         Lease-->>Dream: not_cancelled
         Dream->>Lease: set_phase(rem)
-        Dream->>Data: read_memory_context(bounds)
-        Data-->>Dream: memory_context
+        loop per persona in batch
+          Dream->>Data: read_memory_context(persona_slug, bounds)
+          Data-->>Dream: memory_context(persona_slug)
+        end
         Dream->>Lease: poll_cancel()
         Lease-->>Dream: not_cancelled
         Dream->>Lease: set_phase(deep)
@@ -42,9 +45,11 @@ sequenceDiagram
           alt provider returns before deadline
             LLM-->>LLMAdapter: provider_response(findings)
             LLMAdapter-->>Dream: findings
-            Dream->>Data: upsert_memories(findings.memories)
-            Dream->>Data: enqueue_cli_proposals(findings.forge_briefs)
-            Dream->>Data: enqueue_persona_proposals(findings.persona_briefs)
+            Dream->>Data: upsert_memories(persona_slug, findings.memories[persona_slug])
+            Dream->>Data: enqueue_persona_proposals(persona_slug, findings.persona_briefs[persona_slug])
+            Note over Dream,Data: Memory and persona-proposal writes are input-closed per persona.
+            Dream->>Data: enqueue_cli_proposals(findings.forge_briefs, pattern_key, evidence_by_persona)
+            Note over Dream,Data: Runtime-scoped, no persona_slug. One tx resolves pattern_key, checks open proposal, counts rejections. pattern_key is part of the chunk idempotency key.
             Dream->>Lease: poll_cancel()
           else deadline expires
             LLMAdapter-->>Dream: timeout
