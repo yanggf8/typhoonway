@@ -127,6 +127,47 @@ The only numeric placeholders that exist yet are the six in **PLAN §8.10** ("ex
 
 PLAN §5.9 "v0.1 is done when" is the current criteria checklist. HLD v0.1 review was recorded in DLD_Notes.md on 2026-05-07; DLD drafting may proceed from that structure.
 
+## Terminology Quick Reference
+
+Old term → current term (do not use old terms in new edits):
+
+| Deprecated | Current |
+|---|---|
+| skills, skill docs | tools, `tool.md` descriptors |
+| skill registry | tool registry |
+| canonical user | user + persona (separate concepts) |
+| soul, soul proposals | persona, persona proposals |
+| `typhoon skill ...` | `typhoon tool ...` |
+| `typhoon soul ...` | `typhoon persona ...` |
+| in-memory channel | durable Turso-backed queue |
+| external-agent module | use-plane CLI subcommands |
+
+## tool.md Contract
+
+Every approved CLI requires a reviewed `tool.md` descriptor (see `TOOL.md`). Required headings in order:
+
+```
+# <tool-name>
+## Summary / ## When to Use / ## When Not to Use / ## Command
+## Inputs / ## Outputs / ## Side Effects / ## Examples
+## Failure Modes / ## Dependencies
+```
+
+Core builds the bounded LLM tool manifest from these descriptors. Memory adds context but is not the callable interface.
+
+## HLD Section Map
+
+HLD.html is too large to read at once. Key sections:
+
+| Section | Content |
+|---|---|
+| §2.1 | Layer view matrix (Presentation → Application → Integration → Data) |
+| §2.2 | Module catalog (17 modules + adapters) |
+| §2.3 | Process view (6 sequence diagrams: edge delivery, queued turn, scheduled, dream, registry mutation, health) |
+| §2.4 | Subsystem partitioning (S1–S5, S5A–S5D component groups) |
+| §2.5 | Project layout and crate structure |
+| §3 | State machines (cli_proposals, persona_proposals, tool registry, dream_runs) |
+
 ## Working with this repo
 
 - **No code yet.** Edits target Markdown / HTML design docs.
@@ -135,3 +176,4 @@ PLAN §5.9 "v0.1 is done when" is the current criteria checklist. HLD v0.1 revie
 - **PROPOSAL / PLAN are living scope docs.** Revise in place; don't append.
 - **OUTDATEDPLAN.md / OUTDATEDDESIGN.md are frozen.** Never modify.
 - **DLD_Notes.md is WIP planning, not the DLD.** Updated alongside HLD when subsystem partitioning changes.
+- **DLD/HLD drift rule.** Any DLD deviation from HLD requires an HLD update in the same commit.
