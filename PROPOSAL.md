@@ -6,27 +6,27 @@
 
 ## 1. The Problem
 
-Today's agents accumulate skills. Each skill is a text document — a name, a description, a procedure — that the agent reads at session start and invokes when a trigger phrase matches.
+Many agents accumulate reusable skill documents — names, descriptions, and procedures discovered or loaded when needed. Packaging and discovery differ by host.
 
 Skills have three costs the user actually feels:
 
-- **Token tax.** 100+ skills × descriptions in the system prompt × every session.
+- **Tool discovery cost.** Large eager-loaded catalogs consume context; modern on-demand tool loading can reduce this cost, so token savings must be measured against that baseline.
 - **Agent lock-in.** A skill installed in Claude Code doesn't help Cursor, Codex, a bash pipeline, or a human.
 - **Maintenance drag.** Every new agent, every new machine, redo the install.
 
-Maintaining skills across multiple agents is cumbersome, and skills don't port.
+Maintaining the same workflow across agents can require host-specific packaging and updates.
 
 ---
 
 ## 2. The Insight
 
-**The unit of reuse should be a CLI, not a skill doc.**
+**The unit of reuse should be a CLI.**
 
 CLIs already port. Anything that can exec a subprocess can use them — agents, humans, shell scripts, cron, CI, other agents. A skill only helps the agent that owns it.
 
 Typhoon grows CLIs from observed use. When the user and agent do the same three-step thing eight times, Typhoon proposes a binary that does it in one call. The user reviews the source, approves, and the CLI lands on `PATH`. Next time, the agent (or the user) just calls it.
 
-No skill registry. No system-prompt catalog. No agent-side install.
+No agent-specific skill installation. Typhoon still needs a bounded tool manifest so its own channel LLM can discover approved CLIs.
 
 ---
 
@@ -111,13 +111,15 @@ Identity flow per channel turn. Typhoon does not authenticate users itself — p
 1. **Channel binding → user.** `(channel, bot_account_id, peer_id) → user_id`, via a verified binding row.
 2. **Bot account → active persona.** v0.1 uses the simplest model: **one Telegram bot account corresponds to one persona**. The bot's persona is configured at deploy time. Future versions may add per-thread or command-driven persona switching, but v0.1 ships with per-bot persona because it's the cleanest mapping (the bot's credentials already authenticate it as that persona) and it generalises to future channels (Slack workspace = persona, Discord server = persona).
 
+Before dispatch, the worker checks that the bound `user_id` owns the bot's configured persona. A mismatch dead-letters the turn as `persona_access_denied`; v0.1 has no shared-persona grant.
+
 If the binding lookup misses, the channel message is not accepted as a Typhoon turn. v0.1 marks the inbound queue row `dead_letter` with reason `binding_missing`; it does not auto-bind the peer, does not default to an admin identity, and does not emit an onboarding reply.
 
 The Telegram path is queued inside one gateway daemon. The gateway edge loop talks to Telegram through the adapter and writes normalized updates into a durable channel inbox; the Typhoon Way worker loop claims those rows, runs the agent loop, and writes replies to a channel outbox that the edge loop delivers. This is intentionally a Turso-backed queue, not an in-memory Rust channel, because the handoff must survive daemon restarts, expose retry/dead-letter state, and keep external-system I/O decoupled from the Typhoon agent loop.
 
-The role gate is on the *user*, not the persona. Only a user with `role='admin'` may ratify proposals or mutate the tool registry; a `role='author'` user contributes signals, consumes memory, and runs installed tools through whichever of their personas is active. The deploying party is seeded as the first admin at `typhoon init`. v0.1 has exactly one admin and zero or more authors.
+The role gate is on the *user*, not the persona. Only a user with `role='admin'` may ratify proposals or mutate the tool registry; a `role='author'` user contributes signals, consumes memory, and runs installed tools through whichever of their personas is active. `typhoon init --admin-user-id ID` promotes that existing persona-core user to the first admin; the DB token authorizes bootstrap but does not identify a human. v0.1 has exactly one admin and zero or more authors.
 
-v0.1 is single-channel (Telegram, with one bot per persona) plus the admin's external-agent channel (Claude Code, Cursor, Codex). The external-agent channel defaults to the admin's primary persona; an explicit `--persona` flag is added when a second persona uses that channel.
+v0.1 is single-channel (Telegram, with one bot per persona) plus the admin's external-agent channel (Claude Code, Cursor, Codex). The external-agent channel defaults to the admin's primary persona; `--persona` lets the admin select another persona they own.
 
 ### What dream produces
 
@@ -141,9 +143,11 @@ Memory structure borrows the useful parts of mem0 v3 rather than depending on me
 
 A signal chain is tagged **successful** when the final tool call exits 0 and the next user turn carries no correction signal. REM clusters only successful chains — noisy dead-ends and hallucinated paths don't become CLI proposals.
 
+**Execution state pilot.** [SKILL.state](https://arxiv.org/html/2608.26263v3) suggests a useful runtime pattern for long, procedural turns: the model receives a stable policy, current structured state, and the latest observation; a deterministic harness validates and applies its state patch. Try this for multi-step Telegram tool workflows and confirmation resumption. Keep the persona's long-term memories and the append-only signal/audit evidence separate. Persist each observation before reducing it to state; a bounded, persona/session-scoped FTS search over retained observations can recover a detail that only becomes relevant later. This preserves a path back to evidence where the paper's sufficient-state assumption fails. The pilot must compare completion, tokens, latency, and missed-detail recovery against the existing prompt-history path before becoming the default.
+
 ### CLI classification: pure / read / mutate
 
-Tiers guide **requirement quality and review strictness**, not approval flow. Every CLI needs operator approval in v0.1.
+Tiers guide requirement quality, review strictness, and channel execution policy. Every CLI needs operator approval before installation in v0.1.
 
 | Tier | Effect | Examples | Review intensity |
 |---|---|---|---|
@@ -152,6 +156,8 @@ Tiers guide **requirement quality and review strictness**, not approval flow. Ev
 | **Mutate** | Writes disk / network / subprocess | `deploy-preview`, `commit-push`, `restart-service` | Strict — read every line |
 
 Dream emits a rough tier claim based on which signals the pattern touched. The forge confirms or revises that tier in the hardened requirement and uses it to choose the test strategy and implementation constraints. There is no sandbox in v0.1. Tier honesty is reviewed by the operator from the brief, hardened requirement, source, declared dependencies, and forge's correctness argument.
+
+The Telegram LLM may invoke only active, approved registry tools; generic shell and filesystem operations are not exposed as model tools. A pure/read call runs after the normal identity and registry checks. A mutate call creates a durable pending request containing the exact tool version and arguments, then pauses the turn. The bound persona owner must confirm that specific request in the same Telegram chat before execution. Rejection or expiry executes nothing. A confirmed request is claimed for one execution attempt; if a crash leaves its outcome uncertain, Typhoon reports it for manual reconciliation instead of retrying the mutation. Admin-configured scheduled targets and admin-run external-agent commands are separate authorized paths.
 
 **All tiers** also fail a deliberately strict **hardcoded-path scan** — absolute user paths like `/home/…`, `/Users/…`, `C:\…`, `/tmp/…` are rejected because they defeat portability or hide machine assumptions. Source must use `$HOME`, `$PWD`, CLI arguments, or runtime-created temp paths such as `mktemp`. Simple regex, any language. False positives are acceptable in v0.1; the forge can revise the source and resubmit.
 
@@ -167,7 +173,7 @@ Dream checks existing CLIs before drafting a new brief — by description embedd
 
 **Replacements never auto-approve, even pure tier.** A pure-function rewrite still changes behavior downstream callers depend on — silently swapping it would break the user's habits.
 
-On approval of a replacement, the old binary moves to `~/.typhoon/bin/.history/<name>.<timestamp>`. `typhoon tool rollback <name>` reverts. The whole swap is atomic — backup, replace, registry update, and reviewed `tool.md` update all succeed together or none do.
+On approval of a replacement, the old binary moves to `~/.typhoon/bin/.history/<name>.<timestamp>`. `typhoon tool rollback <name>` reverts. Registry, reviewed `tool.md`, and proposal status commit atomically in the DB. The filesystem swap uses staging and locks; `tool sync` reconciles crash leftovers against the committed registry checksum.
 
 ### Human in the loop
 
@@ -326,6 +332,10 @@ A CLI that shells out to `jq` or `gh` is portable only where those exist. The fo
 
 ## 5. Evidence This Is Reachable
 
+**Method check (October 2026).** [OpenAI tool search](https://developers.openai.com/api/docs/guides/tools-tool-search) can load tool definitions on demand, so avoiding a large eager prompt is no longer a unique CLI advantage. [Programmatic tool calling](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling) can also compose tools without a host-installed CLI. Typhoon's distinct bet remains a reviewed executable usable by humans, shell scripts, CI, and different agent hosts. Before building the full dream/forge stack, validate one manually forged CLI against representative existing-agent workflows: task success, total tokens/cost, latency, portability, and operator maintenance time. Keep the architecture only where the measured reuse benefit justifies its runtime and review cost.
+
+For channel execution, [OpenAI's tool guidance](https://developers.openai.com/api/docs/guides/tools-connectors-mcp) reinforces a separate boundary: approving installation does not authorize every later high-impact call. v0.1 therefore restricts the Telegram model to approved registry tools and requires persona-owner confirmation for each mutate call.
+
 **Hermes Agent (Nous Research; v0.10.0 on Apr 16, 2026)** is evidence that an agent with a closed learning loop can be useful in the wild. As of Apr 24, 2026, the official GitHub repo reports roughly 97.8K stars. The important ideas for Typhoon are not the star count; they are the shape of the loop: create reusable artifacts from experience, improve them through use, retrieve past sessions, run through messaging channels, and schedule unattended work.
 
 Hermes forges skill documents and is now exploring self-evolution of skills, prompts, tool descriptions, and eventually code through trace-driven optimization plus human-reviewed PRs. Typhoon adopts the parts that fit: trace analysis, requirement hardening, artifact lifecycle, scheduled review, and human ratification. Typhoon rejects the part that creates an in-context skill catalog. The reusable artifact remains a CLI, not a skill file.
@@ -372,7 +382,7 @@ Typhoon itself: no YAML, no JSON config, no Python, no Node. Generated CLIs: wha
 ## 8. Typhoon's Own Command Surface (sketch — exact shape belongs in the design doc)
 
 ```bash
-typhoon init --url URL --token TOK     # connect persona-core TursoDB, run Typhoon migrations + seed
+typhoon init --url URL --token TOK --admin-user-id ID  # migrate, seed, promote existing user
 typhoon gateway                        # Channel daemon: Telegram edge loop + queue-consuming worker loop
 
 typhoon dream [--catchup] [--force]    # readiness-gated dream cycle; --force bypasses the signal-token gate

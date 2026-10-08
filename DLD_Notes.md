@@ -59,7 +59,7 @@ DLD.md
   - document map
   - global conventions
   - workspace / crate dependency rules
-  - CLI conventions (exit codes, JSON envelope, --user, --json, error format)
+  - CLI conventions (exit codes, JSON envelope, --persona, --json, error format)
   - DLD/HLD drift discipline
   - cross-cutting test strategy
   - how to read subsystem chapters
@@ -67,7 +67,8 @@ DLD.md
   ## Data Model
     - persona-core's tables vs. Typhoon's tables; coexistence rules
     - tables, indexes, constraints (Typhoon-owned)
-    - channel inbox/outbox queue schema, lease/retry/dead-letter semantics, provider-update dedupe keys
+    - channel inbox/outbox queue and `channel_tool_approvals` schema, lease/retry/dead-letter semantics, provider-update dedupe keys
+    - if the execution-state pilot succeeds: append-only, persona/session-scoped turn observations and an FTS index for long-workflow recovery, retained independently of 7-day dream-signal pruning
     - `dream_runs` lease schema (host, pid, status, phase_started_at, last_heartbeat_at, cancel_requested_at, expected_finish_at, log_tail), heartbeat tick, stale-row close + new-row takeover transaction, run_id ownership checks, terminal-status set, phase-duration EWMA storage
     - migration rules (versioned per owner; additive-only)
     - row ownership / scoping (persona_slug-tagged, user_id-tagged, vs system-scoped)
@@ -112,10 +113,13 @@ These are decisions that should be stated up front, not rediscovered per chapter
 - **No `tokio::main` in library crates.** Async-runtime choice is binary-level. (Already in HLD §2.5.)
 - **Per-row `persona_slug` enforcement.** Every data-access API for per-persona state (signals, memory, persona proposals) takes `persona_slug` and filters every read and write — verified by test, not by convention. Cross-persona reads through these APIs are forbidden; dream is the only consumer that opts into a cross-persona scan, through a separate API.
 - **Channel queue is durable loop-to-loop handoff.** The gateway edge loop and gateway worker loop run in one v0.1 daemon, but they communicate through Typhoon-owned Turso inbox/outbox rows with lease owner/expiry, attempt count, next-at, provider update ID dedupe, and dead-letter state. Do not replace this with an in-memory Rust channel; the queue is the durable boundary that preserves work across daemon restarts and can support split deployments later.
+- **Channel tool-call gate.** The Telegram LLM sees only active approved registry tools, never a generic shell/filesystem tool. Pure/read calls pass identity, tier, status, and checksum checks. A mutate call stores immutable tool version/args and paused turn context; the same bound persona owner confirms it through Telegram. Reject/expiry runs nothing; replacement or disable cancels it. A claimed execution runs at most once automatically; an uncertain crash is marked `unknown` for operator reconciliation.
+- **Remote transaction spike before schema lock-in.** On the actual persona-core TursoDB and chosen Rust client, verify `BEGIN IMMEDIATE`, rollback, unique constraints, and stale-lease takeover. Do not infer cloud behavior solely from local SQLite tests.
 - **No implicit identity fallback for channel turns.** A queued channel turn may enter core only after the gateway worker loop resolves a verified binding and a configured persona. Missing binding means the inbound row moves to `dead_letter` with reason `binding_missing`; it is not auto-bound, not mapped to an admin default, and not answered with an onboarding prompt unless a future design adds an explicit binding flow.
+- **Check persona ownership at the channel boundary.** The resolved persona must be owned by the bound user. A mismatch dead-letters the row with `persona_access_denied`, before memory retrieval, tool execution, or signal recording. v0.1 has no shared-persona grant.
 - **`tool.md` is required for LLM tool use.** Every approved forged/promoted CLI must have a reviewed `tool.md` descriptor. Core builds the bounded LLM tool manifest from Tool registry rows and `tool.md`; memory may add context, but it is not the callable interface.
 - **Active `tool.md` storage is registry-row storage.** During proposal review, `tool.md` is attached to proposal data. On approval, the reviewed active copy is stored as a column on the tool registry row, not as a filesystem sidecar.
-- **persona-core schema is read-mostly.** Typhoon's data-access libraries treat persona-core's `user` and `persona` tables as read-mostly. The only Typhoon-driven write into persona-core's schema is a persona-attribute column update through the Persona attributes library, executed inside an approved persona-proposal transaction. No Typhoon code may write `user`, `audit_log`, or `invite`.
+- **persona-core schema is read-mostly.** Bootstrap may set `role='admin'` for the existing user explicitly named by `--admin-user-id`; the DB token authorizes this operation but does not identify a human. After bootstrap, Typhoon may update persona attribute columns only through an approved persona proposal. No other Typhoon path may write `user`, `audit_log`, or `invite`.
 - **Review order.** S5A (data-access APIs) and S5D (transaction/lock primitives) are the sign-off blocker for S1–S4. S5B (storage adapters) may follow alongside S5A; S5C (service adapters) may be drafted in parallel with S2. After S5A and S5D are stable, S1–S4 are independent.
 
 ## Open decisions for DLD-time
@@ -123,8 +127,8 @@ These are decisions that should be stated up front, not rediscovered per chapter
 These don't need to be settled before drafting starts but should be tracked:
 
 1. **Async runtime per process.** v0.1 daemons (channel gateway, scheduler) need full Tokio; one-shot CLIs may run on `current_thread` Tokio or a `block_on` bridge. DLD picks per-process, given the libSQL client's async surface.
-2. **Sandbox mechanism.** Forged tool execution sandbox specifics (bwrap config, seccomp filters, resource limits, AppArmor/SELinux interaction). HLD does not commit; PLAN §8 lists this as deferred.
-3. **Forged tool execution permissions.** v0.1 default: forged CLI runs with the same privileges as the invoking Typhoon process — typically the channel gateway daemon when invoked from a queued channel turn, or the admin's shell when invoked manually. DLD confirms or revises.
+2. **Sandbox mechanism.** v0.1 has no subprocess sandbox. A later version may specify bwrap, seccomp, resource limits, or host policy; the v0.1 boundary is the registry allowlist and per-call confirmation for channel mutations.
+3. **Forged tool execution permissions.** v0.1 approved CLIs run with the invoking Typhoon process's OS privileges — typically the channel gateway daemon for a confirmed channel call or the admin's shell for a manual call. DLD specifies the process user and credential exposure.
 4. **Success-tagging edge cases.** What counts as a "correction"? PLAN §8 R8 flagged abandoned tasks as a false-positive risk. DLD specifies the rule.
 5. **Retrieval budget knobs.** Exact `top_k`, similarity threshold, per-turn token budget. PLAN §8 lists as placeholders to tune in first two weeks.
 6. **Replacement similarity thresholds.** Dream's "is this proposal a replacement for an existing tool?" decision; threshold values.
@@ -136,6 +140,8 @@ These don't need to be settled before drafting starts but should be tracked:
 12. **Dream phase ETA model.** EWMA over recent successful `dream_runs` phase durations (decay factor TBD), with a static fallback table `dream.expected_phase_duration_seconds.{light,rem,deep,prune}` for the first ~5 runs before EWMA stabilises. DLD nails down the decay factor, the EWMA-vs-fallback switch criterion, and where the EWMA state is stored.
 13. **Dream cancel granularity inside the deep phase.** The deep phase iterates over chunks (each chunk = one LLM call producing one or more memories/proposals). The HLD fixes the control points: poll before launching a chunk and after a chunk returns; do not start a new LLM call after cancel is observed; persist a completed chunk before exiting cancelled. DLD specifies the exact chunk boundary API and the idempotency key for persisted chunk results.
 14. **Deep-phase LLM deadline mechanics.** Each deep-phase LLM request must receive a deadline no later than the remaining `dream.max_runtime_minutes` budget. DLD decides the provider timeout mapping, retry policy on timeout, and how the adapter guarantees a hung provider call cannot keep heartbeating forever.
+15. **Channel tool-call mechanics.** Specify confirmation token/TTL, immutable argument encoding, CAS claim, paused-turn resumption, and `unknown` reconciliation for the approved policy above. Tests must prove that another peer or a stale tool version cannot approve or run a call.
+16. **Structured execution-state pilot.** For bounded, multi-step Telegram workflows, compare append-only prompts with a versioned state schema and validated state patches. Persist raw observations before state reduction in a persona/session-scoped event store; retrieve a bounded number through FTS when earlier details become relevant. Verify FTS support on the actual remote libSQL database, index consistency, and Chinese/English retrieval quality (including short terms) before committing the schema. Keep retention independent of 7-day dream-signal pruning. Do not use execution state as the audit log, persona memory, or dream evidence.
 
 ## Non-goals for DLD
 

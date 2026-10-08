@@ -63,6 +63,7 @@ Scheduled use entries are different: a cron entry may target a specific tool or 
 - Keep it concise enough to fit in a bounded tool manifest.
 - Describe the public interface, not implementation internals.
 - State side effects explicitly.
+- The registry's pure/read/mutate tier must agree with the declared side effects; Telegram mutate calls require confirmation for each invocation.
 - Do not include secrets, local absolute paths, machine-specific usernames, or transient temp paths.
 - Keep examples realistic and copy-pastable.
 - Update it whenever a replacement changes the tool interface or behavior.

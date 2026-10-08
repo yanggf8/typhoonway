@@ -1,0 +1,16 @@
+stateDiagram-v2
+    [*] --> pending: save exact tool version and arguments
+    pending --> confirmed: same bound owner confirms
+    pending --> rejected: owner rejects
+    pending --> expired: TTL passes
+    pending --> cancelled: tool changed or disabled
+    confirmed --> claimed: atomic claim and recheck
+    confirmed --> expired: TTL passes
+    confirmed --> cancelled: tool changed or disabled
+    claimed --> completed: result persisted
+    claimed --> unknown: crash or lost result
+    completed --> [*]
+    rejected --> [*]
+    expired --> [*]
+    cancelled --> [*]
+    unknown --> [*]

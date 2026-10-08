@@ -2,7 +2,7 @@
 
 This document is the v0.1 build plan. It defines what is in scope, the work breakdown, the sequence, the runtime cost envelope, the test cases that decide when v0.1 is done, and the risks with their keepers.
 
-It defers schema definitions, SQL DDL, module layout, and scoring weights to `DESIGN.md`.
+It defers schema definitions, SQL DDL, module layout, and scoring weights to `DLD.md` (planned; see `DLD_Notes.md`).
 
 ---
 
@@ -12,7 +12,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 
 - Typhoon Rust runtime — no interpreter alongside it. v0.1 packages every role into one executable with subcommands (the `git` / `docker` model); that is a deployment default, revisable in DESIGN, not an architectural constraint
 - TursoDB (operator-provided account) as the sole state store
-- Schema migrations + seed, both run at `typhoon init --url $URL --token $TOK`
+- Schema migrations + seed, both run at `typhoon init --url $URL --token $TOK --admin-user-id $ID`; the ID must name an existing persona-core user
 - Config CRUD with type validation, read-only `typhoon sql`
 - Use-plane CLI subcommands (`typhoon signal record`, `typhoon memory query`) — agent-invoked one-shots that invoke Core directly through normal CLI dispatch; the same path covers development shakedown via shell scripts
 - Signal capture: tool calls, corrections, outcomes, session boundaries, success tagging
@@ -20,13 +20,14 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 - Memory extraction (mem0-style) inside the dream cycle; bounded retrieval (Top-K + similarity)
 - Operator hand-off: `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]`
 - Hardcoded-path lint (cross-platform, regex)
-- Atomic approve / install / rollback via `.history/`
+- Atomic database mutations for approve / install / rollback; filesystem swaps use staging, locks, checksums, and `tool sync` repair after crashes
 - CLI lifecycle management (list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps, sync)
-- Replacement flow with diff + atomic swap
+- Replacement flow with diff + staged binary swap and crash repair
 - 3-strike rejection tracking for both patterns and replacements
 - Persona proposals for persona-attribute changes (always require approval)
 - Cron scheduler (`typhoon cron`) that fires `typhoon dream --catchup` on schedule
 - Queued channel path (`typhoon gateway`) with Telegram adapter — primary user interface in v0.1; one daemon hosts an edge loop and a queue-consuming worker loop, while durable Turso-backed inbox/outbox rows decouple external channel I/O from Typhoon Way's agent loop
+- Channel LLM can call only active approved registry tools; mutate-tier calls pause for confirmation by the bound persona owner, with durable request state and no automatic retry after an uncertain execution outcome
 - Observability keepers: `typhoon health`, `typhoon dream stats`, per-CLI health metrics
 
 ### 1.2 Out of scope (v0.1)
@@ -44,6 +45,8 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 
 ## 2. Work Breakdown Structure
 
+Before W1, manually forge one representative repeated workflow as a CLI and try it from two agent hosts plus a shell. Compare task success, token cost, latency, portability, and operator upkeep with existing on-demand tools. This validates the reason to build Typhoon's full dream/forge runtime.
+
 **Effort unit: Agentic Unit (AU).** One AU = one focused agentic coding session — frame the task, agent implements, operator reviews, commit. Sizes:
 
 - **S** = 1 AU
@@ -56,7 +59,7 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | ID | Item | Inputs | Outputs | Size |
 |---|---|---|---|---|
 | W1 | Cargo crate, clap skeleton, logging, error types | — | `typhoon --help` runs | S |
-| W2 | TursoDB client, migrations, seed (needs URL + token at init) | W1 | `typhoon init` creates schema + seed rows | M |
+| W2 | TursoDB client, migrations, seed (needs URL, token, and existing admin user ID at init) | W1 | `typhoon init` creates schema + seed rows | M |
 | W3 | `config get / set / list`, type validation (`string/int/float/bool/cron`) | W2 | Config CRUD with CHECK enforcement | S |
 | W4 | `typhoon sql` — SELECT-only guard | W2 | SELECT works; writes rejected | S |
 | W5 | Use-plane CLI subcommands (`typhoon signal record`, `typhoon memory query`) wired into Core, recorder path, session model, tool-call signal capture | W2 | Hand-run shell script routes through runtime/recorder and produces `signals` rows | M |
@@ -70,22 +73,23 @@ It defers schema definitions, SQL DDL, module layout, and scoring weights to `DE
 | W13 | Persona proposal flow | W8 | Persona-attribute changes routed through approval queue | S |
 | W14 | `typhoon tool propose submit <id> --requirements <file> --tool-doc <tool.md> --source <file> [--tests <file>]` | W12 | Operator can hand hardened requirement + LLM-facing tool descriptor + source back | M |
 | W15 | Hardcoded-path lint | W14 | Obvious absolute paths rejected | S |
-| W16 | Atomic approve (binary + registry + reviewed `tool.md` in one tx; no memory write) | W14, W15 | Approve is all-or-nothing | M |
+| W16 | Atomic DB approval (registry + reviewed `tool.md` + proposal status; no memory write); staged binary install and crash repair | W14, W15 | DB writes are atomic; filesystem state is reconcilable | M |
 | W17 | CLI lifecycle commands — list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps | W16 | Full management surface | M |
 | W17b | `typhoon tool sync` — re-materialize missing/mismatched binaries from registry source, clear orphan staging (synchronous; skips compiled tools when no local toolchain) | W16 | Second machine or post-crash host converges to the registry | S |
 | W18 | Replacement flow + `.history/` archival + atomic swap | W16 | Replacement approval swaps cleanly | M |
 | W18b | Deprecation proposals — `kind=deprecate` enters `awaiting_user` directly, approval flips the target tool to `disabled` and archives the binary | W16 | Dream can retire unused tools through the same ratification gate | S |
 | W19 | Deterministic `pattern_key` derivation + 3-strike rejection tracking (patterns + replacements) | W12, W18 | Same workflow yields the same key across personas and runs; dream stops re-proposing rejected patterns; rejection count is derived from terminal `rejected` rows, not stored | M |
 | W20 | Cron scheduler (`typhoon cron`) firing `typhoon dream --catchup` | W12 | Cron checks dream readiness on schedule; full dream fires only when accumulated signal tokens/chains clear thresholds; `--catchup` performs the same readiness check | S |
-| W21 | Telegram channel (`typhoon gateway`) | W10, W6 | Real user interaction flows Telegram → gateway edge loop → channel inbox → gateway worker loop → core → channel outbox → Telegram, and lands in signals | L |
+| W21 | Telegram channel (`typhoon gateway`), identity checks, approved-tool allowlist | W10, W6, W16 | Telegram → durable queue → core → approved pure/read tool → reply; signals recorded | L |
 | W22 | Keepers — `typhoon health`, `typhoon dream stats`, CLI health metrics in `typhoon tool show` | W20 | Observability wired | M |
-| W23 | Test harness for all TC-* cases — runnable from one command | W17, W21 | `make test` runs the whole suite | M |
+| W23 | Test harness for all TC-* cases — runnable from one command | W17, W24 | `make test` runs the whole suite | M |
+| W24 | Durable mutate-call confirmation and resume | W21 | Bound persona owner confirms exact tool version/args; reject/expiry runs nothing; uncertain crash is not retried | M |
 
 ### 2.2 Critical path
 
-`W1 → W2 → W5 → W6 → W8 → W11 → W12 → W14 → W16 → W21`
+`W1 → W2 → W5 → W6 → W8 → W11 → W12 → W14 → W16 → W21 → W24 → W23` (W21 also waits for W10; W23 also waits for W17)
 
-Side branches (W3, W4, W7, W9, W10, W13, W15, W17, W18, W19, W20, W22, W23) attach to the spine as inputs are satisfied. None of them are on the critical path.
+Other work items attach as their inputs are satisfied. W10 and W17 also feed the acceptance path.
 
 ---
 
@@ -99,7 +103,7 @@ Side branches (W3, W4, W7, W9, W10, W13, W15, W17, W18, W19, W20, W22, W23) atta
 - **M4 — Proposal briefs emerge**: W11, W12, W13
 - **M5 — First CLI lives**: W14, W15, W16, W17, W18, W19
 - **M6 — Autonomous cadence**: W20
-- **M7 — Telegram + observability + acceptance**: W21, W22, W23
+- **M7 — Telegram + confirmation + observability + acceptance**: W21, W22, W24, W23
 
 Each milestone is demoable — a concrete thing you can run from the command line and show. If a milestone isn't demoable, it's not a milestone.
 
@@ -151,14 +155,15 @@ Each test case is a command (or short script) with an observable pass criterion.
 
 | ID | What runs | Pass criterion |
 |---|---|---|
-| TC-M1-01 | `typhoon init --url $URL --token $TOK` on fresh DB | Exit 0; `config` table has seed rows including `agent.name` |
-| TC-M1-02 | Second `typhoon init …` on same DB | Exit 0; `schema_migrations` row count unchanged |
+| TC-M1-01 | `typhoon init --url $URL --token $TOK --admin-user-id $ID` on fresh DB with an existing persona-core user | Exit 0; that user has `role='admin'`; `config` has seed rows including `agent.name` |
+| TC-M1-02 | Second `typhoon init …` on same DB with the same admin ID | Exit 0; `schema_migrations` row count unchanged |
 | TC-M1-03 | `typhoon init` with invalid token | Exit ≠ 0; stderr contains auth error |
 | TC-M1-04 | `typhoon config set dream.min_score notanumber` | Exit ≠ 0; error references type `float` |
 | TC-M1-05 | `typhoon config set dream.min_score 1.5` | Exit ≠ 0; clamped/rejected (range 0.0..=1.0) |
 | TC-M1-06 | `typhoon sql "SELECT * FROM config"` | Exit 0; rows printed |
 | TC-M1-07 | `typhoon sql "INSERT INTO config VALUES (…)"` | Exit ≠ 0; error "SELECT only" |
 | TC-M1-08 | `typhoon sql "DROP TABLE config"` | Exit ≠ 0 |
+| TC-M1-09 | `typhoon init` with a nonexistent `--admin-user-id` | Exit ≠ 0; no admin role is assigned |
 
 ### 5.2 M2 — Signal substrate
 
@@ -205,11 +210,11 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M5-01 | `typhoon tool propose submit <id> --requirements req.md --tool-doc tool.md --source cli.sh --tests test.sh` | Proposal stores hardened requirement + `tool.md` + source + tests and flips `awaiting_forge → awaiting_user` |
 | TC-M5-02 | Submit source without `--requirements` or `--tool-doc` | Exit ≠ 0; proposal remains `awaiting_forge` |
 | TC-M5-03 | Submit source containing `/home/yanggf/project` | Exit ≠ 0; lint rejects hardcoded path |
-| TC-M5-04 | `typhoon tool propose approve <id>` on clean proposal | Binary in `~/.typhoon/bin/<name>`; registry row created with the reviewed `tool.md` body and artifact metadata (checksum, language, dependencies) — all in one transaction. No memory row is written by approval |
-| TC-M5-05 | Approve where binary write fails (inject fault) | No partial state: no registry row, no binary |
+| TC-M5-04 | `typhoon tool propose approve <id>` on clean proposal | Binary checksum matches approved registry row; reviewed `tool.md`, artifact metadata, and proposal status commit in one DB transaction. No memory row is written by approval |
+| TC-M5-05 | Approve where binary write fails (inject fault) | No committed registry or proposal-status change; no active binary after reconciliation |
 | TC-M5-06 | `typhoon tool disable foo` | Binary removed from PATH; registry row retained with `status='disabled'` |
 | TC-M5-07 | `typhoon tool rollback foo` after replacement | Previous version restored from `.history/`; current version archived |
-| TC-M5-08 | Approve replacement proposal | Old binary → `.history/<name>.<ts>`; new binary active; registry lineage updated; all atomic |
+| TC-M5-08 | Approve replacement proposal | Old binary archived; new binary checksum matches registry lineage; injected crash is detected and repaired by `typhoon tool sync` |
 | TC-M5-09 | Reject same pattern 3 times | Fourth dream run produces no proposal for that `pattern_key`; the guard reads a count of terminal `rejected` rows, with no stored counter to drift |
 | TC-M5-12 | Open a second proposal for a `pattern_key` that already has one `awaiting_forge` | Rejected; at most one open proposal exists per `pattern_key` |
 | TC-M5-10 | `typhoon tool promote /usr/local/bin/myscript --tool-doc tool.md` | Registry row created with `approved_by='user'`, reviewed `tool.md`, no origin proposal |
@@ -236,6 +241,11 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M7-06 | `typhoon dream stats` after several runs | Output includes: skipped checks, full runs, clusters detected, graduated to proposal, approved, rejected, and stale-unforged — the last being a *derived* count of rows still `awaiting_forge` older than `forge.proposal_ttl_days`, not a proposal status |
 | TC-M7-07 | Age a proposal past `forge.proposal_ttl_days` with it still `awaiting_forge` | It appears in the stale-unforged count; its `status` is still `awaiting_forge`; nothing auto-rejects or auto-closes it |
 | TC-M7-07 | `typhoon tool show <name>` for active CLI | Output includes `use_count`, `success_count`, `last_used`, recent errors |
+| TC-M7-08 | Bind user A to a bot configured for user B's persona, then send a message | Inbound row becomes `dead_letter` with `persona_access_denied`; no memory read, tool execution, signal, or reply |
+| TC-M7-09 | LLM requests a generic shell/filesystem action or an unapproved/disabled tool | Core rejects it; no subprocess starts |
+| TC-M7-10 | LLM requests an active mutate-tier tool | Exact version, args, and effects are shown to the bound persona owner; no execution before confirmation; rejection or expiry executes nothing |
+| TC-M7-11 | Confirm a pending mutate call from another peer, or replace/disable the tool before confirmation | Request is rejected or cancelled; no execution |
+| TC-M7-12 | Crash after a confirmed mutate call is claimed, before result is stored | Request becomes `unknown`; restart does not retry the subprocess; operator can inspect it |
 
 ### 5.8 Cross-cutting invariants
 
@@ -279,7 +289,7 @@ These are the short-form rules a reviewer can reject a change against without op
 A note on what belongs here. An invariant is something whose violation is a defect: a correctness property, an authorization rule, an architectural boundary. A deployment default or packaging convention is not an invariant even when it is the current plan, and listing one here has already caused confusion once (see item 1). Preferences of that kind belong in §1.1 scope or in HLD's deployment assumptions.
 
 1. **Typhoon's runtime is Rust only.** No Python, no Node, no interpreter to install alongside the runtime. Generated CLIs may use any language the forge picks. *Packaging is a separate question and is not an invariant:* v0.1 ships every role in one executable with subcommands (§1.1), but choosing Rust does not imply a single artifact, and emitting several `[[bin]]` targets later would violate nothing here. The architectural constraint is the crate boundary set in HLD §2.5, not the number of executables.
-2. **Every proposal approval is atomic** — `BEGIN IMMEDIATE … COMMIT`, rollback on any failure.
+2. **Every proposal approval is atomic in the DB** — `BEGIN IMMEDIATE … COMMIT`; filesystem swaps are reconciled against committed rows after crashes.
 3. **`typhoon sql` is SELECT-only.** DDL and DML are hard-rejected.
 4. **`config set` validates type.** Float scores clamp to `[0.0, 1.0]`. SQL CHECK is belt-and-braces.
 5. **Skills are not a concept.** No `skills`, `skill_triggers`, or `skill_proposals` tables. No `typhoon skill *` commands. CLIs are the only artifact.
@@ -294,7 +304,7 @@ A note on what belongs here. An invariant is something whose violation is a defe
 
 ---
 
-## 8. Decisions Still Open for DESIGN.md
+## 8. Decisions Still Open for DLD.md
 
 These are design-doc concerns, not plan concerns, but flagging so they don't ambush:
 
@@ -302,7 +312,7 @@ These are design-doc concerns, not plan concerns, but flagging so they don't amb
 2. **Signal capture mechanism** — agent-library instrumentation vs. shell-script wrapper that calls `typhoon signal record`. Affects W5.
 3. **Dream LLM choice** — Haiku 4.5 vs. MiniMax M2.7 vs. other. Affects W8; bake-off recommended before locking.
 4. **Online LLM choice** — Claude Sonnet 4.6 vs. GPT-5 vs. GLM 5.1. Affects W21.
-5. **Telegram execution permissions** — does a forged tool triggered via Telegram run with the same privileges as one triggered via external-agent CLI? v0.1 default: yes (the binary is trusted equally regardless of trigger). Document explicitly so it's not an accidental choice.
+5. **Telegram execution permissions** — an approved CLI still runs with the gateway process's OS privileges in v0.1. Core exposes only approved registry tools to the model and requires persona-owner confirmation for each mutate call; DLD defines the confirmation and process-permission details.
 6. **Success-tagging edge cases** — what counts as a "correction"? Regex match? LLM classifier? Explicit `/good` command? Affects W6.
 7. **Retrieval budget knobs** — exact `top_k`, similarity threshold, per-turn token budget. Affects W10.
 8. **Replacement similarity thresholds** — embedding similarity and signal-overlap cutoffs. Affects W18.

@@ -4,43 +4,52 @@ sequenceDiagram
     participant Identity as Identity and persona resolution
     participant Core as Core dispatcher
     participant Data as Data-access APIs
-    participant LLMAdapter as LLM adapter
-    participant LLM as LLM service
-    participant Tool as Tool subprocess
+    participant LLM as LLM adapter/service
+    participant Tool as Approved tool subprocess
     participant Recorder as Signal recorder
 
-    Worker->>Queue: claim_inbound(gateway_id, lease_ttl)
-    alt inbound ready
-      Queue-->>Worker: inbound_message(channel_id, bot_account_id, peer_id, text, attachments)
-      Worker->>Identity: resolve(channel, bot_account_id, peer_id)
-      alt bound peer
-        Identity-->>Worker: (user_id, persona_slug)
-        Worker->>Core: dispatch(invocation, persona_slug)
-        Core->>Data: query_memory(persona_slug, request)
-        Data-->>Core: memory_context
-        Core->>Data: load_active_tool_manifest(persona_slug, budget)
-        Data-->>Core: tool_manifest(from_reviewed_tool_md)
-        loop until final model turn
-          Core->>LLMAdapter: complete(prompt, memory_context, tool_manifest)
-          LLMAdapter->>LLM: provider_request(messages, tools)
-          LLM-->>LLMAdapter: provider_response(content, tool_calls)
-          LLMAdapter-->>Core: model_turn(content, tool_calls)
-          opt LLM requested tool call
-            Core->>Tool: execute_requested_tool(tool_name, args, env)
-            Tool-->>Core: tool_result(exit_code, stdout, stderr)
-          end
+    Worker->>Queue: claim inbound turn
+    Queue-->>Worker: bound peer, bot account, message
+    Worker->>Identity: resolve binding and persona owner
+    alt authorized user and owned persona
+      Identity-->>Worker: user_id, persona_slug
+      Worker->>Core: dispatch turn
+      Core->>Data: scoped memory and active approved tool manifest
+      Data-->>Core: context and tool definitions
+      Core->>LLM: policy, context, latest message, approved tools
+      LLM-->>Core: response or selected tool call
+      alt pure/read approved tool
+        Core->>Data: verify active version and checksum
+        Core->>Tool: execute selected approved tool
+        Tool-->>Core: result
+        Core->>Recorder: record outcome
+        Core-->>Worker: final reply
+        Worker->>Queue: enqueue reply and acknowledge inbound
+      else mutate approved tool
+        Core->>Data: persist pending approval with exact version and arguments
+        Core-->>Worker: pause turn and show exact effects
+        Worker->>Queue: enqueue confirmation request and acknowledge inbound
+        Note over Queue,Worker: Later confirmation is a new queued inbound message.
+        Worker->>Queue: claim owner confirmation
+        Worker->>Identity: recheck same bound peer and persona owner
+        Worker->>Core: resume saved request
+        Core->>Data: atomically claim if confirmed, unexpired, and version active
+        alt claim succeeds
+          Core->>Tool: execute saved arguments once
+          Tool-->>Core: result
+          Core->>Recorder: record outcome
+          Core-->>Worker: resumed reply
+          Worker->>Queue: enqueue reply and acknowledge confirmation
+        else rejected, expired, changed, or uncertain
+          Core-->>Worker: report status without execution
+          Worker->>Queue: acknowledge confirmation
         end
-        Core->>Recorder: record_signal(invocation, result, success_tags)
-        Recorder->>Data: insert_signal(persona_slug, signal)
-        Core-->>Worker: dispatch_result(reply)
-        Worker->>Queue: enqueue_outbound(channel_id, peer_id, reply)
-        Worker->>Queue: ack_inbound(message_id)
-      else unbound peer
-        Identity-->>Worker: binding_missing
-        Worker->>Queue: mark_inbound_dead_letter(message_id, binding_missing)
+      else unknown or unapproved tool
+        Core-->>Worker: reject call without subprocess
+        Worker->>Queue: enqueue error and acknowledge inbound
       end
-    else no inbound ready
-      Queue-->>Worker: none
+    else missing binding or persona mismatch
+      Identity-->>Worker: binding_missing or persona_access_denied
+      Worker->>Queue: dead-letter inbound without core dispatch
     end
-    Note over Queue,Worker: Durable queue decouples external channel availability from Typhoon Way's agent loop.
-    Note over Worker,Recorder: Core is the only caller that drives signal recording.
+    Note over Core,Recorder: Only core drives signal recording.
