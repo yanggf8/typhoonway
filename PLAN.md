@@ -75,19 +75,19 @@ Before W1, manually forge one representative repeated workflow as a CLI and try 
 | W15 | Hardcoded-path lint | W14 | Obvious absolute paths rejected | S |
 | W16 | Atomic DB approval (registry + reviewed `tool.md` + proposal status; no memory write); staged binary install and crash repair | W14, W15 | DB writes are atomic; filesystem state is reconcilable | M |
 | W17 | CLI lifecycle commands — list, show, diff, history, disable, enable, rollback, delete, purge, promote, check-deps | W16 | Full management surface | M |
-| W17b | `typhoon tool sync` — re-materialize missing/mismatched binaries from registry source, clear orphan staging (synchronous; skips compiled tools when no local toolchain) | W16 | Second machine or post-crash host converges to the registry | S |
+| W17b | `typhoon tool sync` — re-materialize missing/mismatched binaries from registry source, clear orphan staging (synchronous; report absent toolchains and checksum-mismatched rebuilds) | W16 | Recoverable artifacts converge to the approved registry checksum; incompatible builds are reported and remain unavailable | S |
 | W18 | Replacement flow + `.history/` archival + atomic swap | W16 | Replacement approval swaps cleanly | M |
 | W18b | Deprecation proposals — `kind=deprecate` enters `awaiting_user` directly, approval flips the target tool to `disabled` and archives the binary | W16 | Dream can retire unused tools through the same ratification gate | S |
 | W19 | Deterministic `pattern_key` derivation + 3-strike rejection tracking (patterns + replacements) | W12, W18 | Same workflow yields the same key across personas and runs; dream stops re-proposing rejected patterns; rejection count is derived from terminal `rejected` rows, not stored | M |
 | W20 | Cron scheduler (`typhoon cron`) firing `typhoon dream --catchup` | W12 | Cron checks dream readiness on schedule; full dream fires only when accumulated signal tokens/chains clear thresholds; `--catchup` performs the same readiness check | S |
 | W21 | Telegram channel (`typhoon gateway`), identity checks, approved-tool allowlist | W10, W6, W16 | Telegram → durable queue → core → approved pure/read tool → reply; signals recorded | L |
 | W22 | Keepers — `typhoon health`, `typhoon dream stats`, CLI health metrics in `typhoon tool show` | W20 | Observability wired | M |
-| W23 | Test harness for all TC-* cases — runnable from one command | W17, W24 | `make test` runs the whole suite | M |
+| W23 | Test harness for all TC-* cases — runnable from one command | W1–W22 (including W17b/W18b), W24 | `make test` runs the whole suite | M |
 | W24 | Durable mutate-call confirmation and resume | W21 | Bound persona owner confirms exact tool version/args; reject/expiry runs nothing; uncertain crash is not retried | M |
 
 ### 2.2 Critical path
 
-`W1 → W2 → W5 → W6 → W8 → W11 → W12 → W14 → W16 → W21 → W24 → W23` (W21 also waits for W10; W23 also waits for W17)
+`W1 → W2 → W5 → W6 → W8 → W11 → W12 → W14 → W16 → W21 → W24 → W23` (W21 also waits for W10; W23 waits for every feature work item)
 
 Other work items attach as their inputs are satisfied. W10 and W17 also feed the acceptance path.
 
@@ -101,7 +101,7 @@ Other work items attach as their inputs are satisfied. W10 and W17 also feed the
 - **M2 — Signal substrate**: W5, W6, W7
 - **M3 — Dream has a brain**: W8, W9, W10
 - **M4 — Proposal briefs emerge**: W11, W12, W13
-- **M5 — First CLI lives**: W14, W15, W16, W17, W18, W19
+- **M5 — First CLI lives**: W14, W15, W16, W17, W17b, W18, W18b, W19
 - **M6 — Autonomous cadence**: W20
 - **M7 — Telegram + confirmation + observability + acceptance**: W21, W22, W24, W23
 
@@ -214,7 +214,8 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M5-05 | Approve where binary write fails (inject fault) | No committed registry or proposal-status change; no active binary after reconciliation |
 | TC-M5-06 | `typhoon tool disable foo` | Binary removed from PATH; registry row retained with `status='disabled'` |
 | TC-M5-07 | `typhoon tool rollback foo` after replacement | Previous version restored from `.history/`; current version archived |
-| TC-M5-08 | Approve replacement proposal | Old binary archived; new binary checksum matches registry lineage; injected crash is detected and repaired by `typhoon tool sync` |
+| TC-M5-08 | Approve replacement proposal | Old binary archived; new binary checksum matches registry lineage; injected crash is detected and repaired by `typhoon tool sync` when the approved bytes can be reproduced |
+| TC-M5-13 | Rebuild a compiled tool from registry source with a different resulting checksum | `tool sync` reports the mismatch and leaves the rebuilt binary unavailable; it does not overwrite the approved checksum |
 | TC-M5-09 | Reject same pattern 3 times | Fourth dream run produces no proposal for that `pattern_key`; the guard reads a count of terminal `rejected` rows, with no stored counter to drift |
 | TC-M5-12 | Open a second proposal for a `pattern_key` that already has one `awaiting_forge` | Rejected; at most one open proposal exists per `pattern_key` |
 | TC-M5-10 | `typhoon tool promote /usr/local/bin/myscript --tool-doc tool.md` | Registry row created with `approved_by='user'`, reviewed `tool.md`, no origin proposal |
@@ -239,13 +240,13 @@ Each test case is a command (or short script) with an observable pass criterion.
 | TC-M7-04 | Message triggers a forged CLI via memory retrieval | Bot reply contains the CLI's output after the gateway edge loop delivers the outbox row; `use_count` increments |
 | TC-M7-05 | `typhoon health` | Output includes DB latency, channel queue backlog/oldest age, gateway/cron liveness, last successful write timestamp, recorder health, last dream run status, and latest skipped-run reason if present |
 | TC-M7-06 | `typhoon dream stats` after several runs | Output includes: skipped checks, full runs, clusters detected, graduated to proposal, approved, rejected, and stale-unforged — the last being a *derived* count of rows still `awaiting_forge` older than `forge.proposal_ttl_days`, not a proposal status |
-| TC-M7-07 | Age a proposal past `forge.proposal_ttl_days` with it still `awaiting_forge` | It appears in the stale-unforged count; its `status` is still `awaiting_forge`; nothing auto-rejects or auto-closes it |
 | TC-M7-07 | `typhoon tool show <name>` for active CLI | Output includes `use_count`, `success_count`, `last_used`, recent errors |
 | TC-M7-08 | Bind user A to a bot configured for user B's persona, then send a message | Inbound row becomes `dead_letter` with `persona_access_denied`; no memory read, tool execution, signal, or reply |
 | TC-M7-09 | LLM requests a generic shell/filesystem action or an unapproved/disabled tool | Core rejects it; no subprocess starts |
 | TC-M7-10 | LLM requests an active mutate-tier tool | Exact version, args, and effects are shown to the bound persona owner; no execution before confirmation; rejection or expiry executes nothing |
 | TC-M7-11 | Confirm a pending mutate call from another peer, or replace/disable the tool before confirmation | Request is rejected or cancelled; no execution |
 | TC-M7-12 | Crash after a confirmed mutate call is claimed, before result is stored | Request becomes `unknown`; restart does not retry the subprocess; operator can inspect it |
+| TC-M7-13 | Age a proposal past `forge.proposal_ttl_days` with it still `awaiting_forge` | It appears in the stale-unforged count; its `status` is still `awaiting_forge`; nothing auto-rejects or auto-closes it |
 
 ### 5.8 Cross-cutting invariants
 

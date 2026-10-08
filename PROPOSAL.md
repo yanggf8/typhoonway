@@ -296,7 +296,7 @@ typhoon tool purge <name>                  # hard delete: removes the row and cl
 
 typhoon tool promote <path>                # adopt a hand-written script into the registry
 typhoon tool check-deps                    # scan external_deps across all CLIs
-typhoon tool sync                          # rebuild binaries from registry source (second machine)
+typhoon tool sync                          # rebuild from registry source; install only checksum-matching artifacts
 ```
 
 `promote` is the escape hatch: user writes a script themselves and wants Typhoon to track it. Runs the classification + safety check, adds it with `approved_by='user'` and no origin proposal.
@@ -318,7 +318,7 @@ TursoDB is the always-online state store for one Typhoon runtime instance. The r
 Re-materialization depends on what the forge produced:
 
 - **Script languages** (bash, Python, Deno, Node, Ruby…): `typhoon tool sync` writes the source back to `~/.typhoon/bin/`, `chmod +x`, and checks declared dependencies. Near-instant.
-- **Compiled languages** (Rust, Go…): the registry carries the actual source that was forged on machine A. `typhoon tool sync` runs the local toolchain (`cargo build`, `go build`) on that exact source to produce the binary — **no forge re-invocation**, no LLM variability. In v0.1 this is synchronous and skips with a clear error when no toolchain is present; running builds in the background, priority-queued by `use_count`, is deferred to v0.2.
+- **Compiled languages** (Rust, Go…): the registry carries the actual source that was forged on machine A. `typhoon tool sync` runs the local toolchain (`cargo build`, `go build`) on that exact source — **no forge re-invocation**, no LLM variability. The result is installed only if its bytes match the approved registry checksum. A different compiler, target, dependency set, or build environment may produce different bytes; v0.1 reports that mismatch and leaves the tool unavailable for operator review. It never updates the approved checksum from an unreviewed local build. Sync is synchronous and also skips with a clear error when no toolchain is present; background, priority-queued builds are deferred to v0.2.
 
 The registry always stores the brief + hardened requirement + forged source. Compiled binaries themselves aren't synced.
 
